@@ -2206,6 +2206,11 @@ impl WebGL2Renderer {
                     if text.is_empty() {
                         return; // No text to render
                     }
+                    // Host-suppressed member (see set_blanked_members): the
+                    // page names members whose text must never be drawn.
+                    if crate::player::blanked_members::is_blanked(&member.name) {
+                        return;
+                    }
 
                     // Derive wrapping behavior from text member box type + explicit wordWrap flag.
                     // Director commonly uses #adjust with wrapped multi-line text.
@@ -2873,6 +2878,10 @@ impl WebGL2Renderer {
                     // sprite width fit "Goombahs, Ghosts or Bowser --" on
                     // one line, while Director correctly wraps after
                     // "Ghosts or".
+                    // Host-suppressed member (see set_blanked_members).
+                    if crate::player::blanked_members::is_blanked(&member.name) {
+                        return;
+                    }
                     let wrap_width = if field_member.width > 0 {
                         (field_member.width as u32).min(width)
                     } else {

@@ -76,6 +76,246 @@ pub fn set_startup_do(code: String) {
     player_dispatch(PlayerVMCommand::SetStartupDo(code));
 }
 
+/// Set a Lingo global from JS, before (or while) a movie runs. Replicates
+/// what a Director projector's embedded startup movie does for
+/// wrapper-communicated state — e.g. "Matematik i Maaneby+"'s exe stub sets
+/// `HSprog` (language) and friends, which titel.dcr's startMovie then
+/// consumes via `if sSprog = EMPTY/VOID then sSprog = HSprog`. Globals are
+/// NOT cleared by a movie load (only by Player::reset), so a value set right
+/// after VM init survives into startMovie and across gotoNetMovie.
+///
+/// The value is typed by what JS passes: a number becomes an Int (or Float),
+/// a boolean becomes 1/0, anything else its string form. Flag globals such as
+/// `fNet` are tested with `if fNet then ...`, which needs a real number, so a
+/// string-only setter could not seed them. Taking `JsValue` also stops a
+/// numeric argument from being read as a string pointer, which trapped the
+/// wasm module with "memory access out of bounds".
+#[wasm_bindgen]
+pub fn set_lingo_global(name: String, value: JsValue) {
+    reserve_player_mut(|player| {
+        use director::lingo::datum::{Datum, DatumType};
+        // A JS array becomes a Lingo list, so list-shaped wrapper state can be
+        // seeded too: "Matematik i Maaneby+" keeps its per-language enable
+        // flags in `fVisSprog` ([DA, EN, SV, NO, NY]), which startMovie
+        // defaults to [1, 0, 1, 1, 1] - the English flag hidden - unless the
+        // wrapper supplied one.
+        if let Some(arr) = value.dyn_ref::<js_sys::Array>() {
+            let items: std::collections::VecDeque<_> = arr
+                .iter()
+                .map(|v| {
+                    let d = match v.as_f64() {
+                        Some(n) if n.fract() == 0.0 => Datum::Int(n as i32),
+                        Some(n) => Datum::Float(n),
+                        None => Datum::String(v.as_string().unwrap_or_default()),
+                    };
+                    player.alloc_datum(d)
+                })
+                .collect();
+            let sym = Symbol::from_str(&name);
+            let datum_ref = player.alloc_datum(Datum::List(DatumType::List, items, false));
+            player.globals.insert(sym, datum_ref);
+            return;
+        }
+        let datum = if let Some(b) = value.as_bool() {
+            Datum::Int(b as i32)
+        } else if let Some(n) = value.as_f64() {
+            if n.fract() == 0.0 && n.abs() <= i32::MAX as f64 {
+                Datum::Int(n as i32)
+            } else {
+                Datum::Float(n)
+            }
+        } else {
+            Datum::String(value.as_string().unwrap_or_default())
+        };
+        let sym = Symbol::from_str(&name);
+        let datum_ref = player.alloc_datum(datum);
+        player.globals.insert(sym, datum_ref);
+    });
+}
+
+/// Members whose text is never drawn.
+///
+/// A preservation port sometimes has to suppress a line the original prints
+/// unconditionally. "Matematik i Maaneby+" is a school-licence build: its
+/// English branch writes "Test license - Pre-release version" with no
+/// condition at all (the Danish branch has one), and the evaluation sign
+/// carries the same message. Both are false statements today - the company
+/// closed in 2014 and the rights holder has permitted free use - so the page
+/// names those members here and the renderer skips their text.
+#[wasm_bindgen]
+pub fn set_blanked_members(names: JsValue) {
+    use wasm_bindgen::JsCast;
+    let mut set: Vec<String> = Vec::new();
+    if let Some(arr) = names.dyn_ref::<js_sys::Array>() {
+        for v in arr.iter() {
+            if let Some(s) = v.as_string() {
+                set.push(s.to_lowercase());
+            }
+        }
+    }
+    crate::player::blanked_members::set_blanked(set);
+}
+
+/// Dump one sprite channel's live state as JSON, for diagnosing "it renders
+/// wrong" without pixel archaeology. Reports what the sprite points at, where
+/// it sits, how big it is, whether it owns its size (`stretch`), and the
+/// member's intrinsic size - the pair that explains a squashed or stretched
+/// bitmap, since a member swap only adopts the member's size when stretch is 0.
+#[wasm_bindgen]
+pub fn get_sprite_info(sprite_num: i32) -> String {
+    reserve_player_mut(|player| {
+        let sprite = match player.movie.score.get_sprite(sprite_num as i16) {
+            Some(s) => s,
+            None => return "{\"error\":\"no such sprite\"}".to_string(),
+        };
+        let (member_desc, intrinsic) = match &sprite.member {
+            Some(r) => {
+                let m = player.movie.cast_manager.find_member_by_ref(r);
+                let name = m.map(|m| m.name.clone()).unwrap_or_default();
+                let size = m.and_then(|m| match &m.member_type {
+                    crate::player::cast_member::CastMemberType::Bitmap(b) => {
+                        Some((b.info.width as i32, b.info.height as i32))
+                    }
+                    _ => None,
+                });
+                // Text/Field content too: a wrong-language or stale label is
+                // the same class of bug as a mis-sized bitmap, and reading it
+                // here beats inferring it from a screenshot.
+                let text = m.and_then(|m| match &m.member_type {
+                    crate::player::cast_member::CastMemberType::Text(t) => Some(format!(
+                        "[Text spans={} first=<{}>] {}",
+                        t.html_styled_spans.len(),
+                        t.html_styled_spans.first().map(|s| s.text.clone()).unwrap_or_default(),
+                        t.text
+                    )),
+                    crate::player::cast_member::CastMemberType::Field(f) => Some(format!(
+                        "[Field runs={}] {}",
+                        f.formatting_runs.len(),
+                        f.text
+                    )),
+                    _ => None,
+                });
+                let mut desc = format!("{}:{} \"{}\"", r.cast_lib, r.cast_member, name);
+                // Film loops carry their own geometry: the info block's
+                // registration point and size, plus the bounding box computed
+                // from the member sprites. A loop that renders clipped or
+                // offset is almost always a disagreement between these.
+                if let Some(fl) = m.and_then(|m| match &m.member_type {
+                    crate::player::cast_member::CastMemberType::FilmLoop(fl) => Some(fl),
+                    _ => None,
+                }) {
+                    desc.push_str(&format!(
+                        " filmloop reg=[{},{}] info={}x{} initial=({},{},{},{}) {}x{} frame={}",
+                        fl.info.reg_point.0, fl.info.reg_point.1,
+                        fl.info.width, fl.info.height,
+                        fl.initial_rect.left, fl.initial_rect.top,
+                        fl.initial_rect.right, fl.initial_rect.bottom,
+                        fl.initial_rect.width(), fl.initial_rect.height(),
+                        fl.current_frame
+                    ));
+                }
+                if let Some(t) = text {
+                    let flat: String = t.chars().take(80).map(|c| {
+                        let n = c as u32;
+                        if n == 13 || n == 10 { '|' }
+                        else if n == 34 || n == 92 { ' ' }
+                        else { c }
+                    }).collect();
+                    desc.push_str(&format!(" text=<{}>", flat));
+                }
+                (desc, size)
+            }
+            None => ("none".to_string(), None),
+        };
+        let reg = sprite.member.as_ref().and_then(|r| {
+            player.movie.cast_manager.find_member_by_ref(r).and_then(|m| match &m.member_type {
+                crate::player::cast_member::CastMemberType::Bitmap(b) => {
+                    Some((b.reg_point.0 as i32, b.reg_point.1 as i32))
+                }
+                _ => None,
+            })
+        });
+        format!(
+            "{{\"sprite\":{},\"member\":\"{}\",\"loc\":[{},{}],\"size\":[{},{}],\"intrinsic\":{},\"reg\":{},\"stretch\":{},\"visible\":{},\"ink\":{},\"blend\":{},\"puppet\":{},\"behaviors\":{},\"active\":{},\"rolloverHandler\":{},\"entered\":{},\"spriteListIdx\":{}}}",
+            sprite_num,
+            member_desc,
+            sprite.loc_h,
+            sprite.loc_v,
+            sprite.width,
+            sprite.height,
+            match intrinsic {
+                Some((w, h)) => format!("[{},{}]", w, h),
+                None => "null".to_string(),
+            },
+            match reg {
+                Some((x, y)) => format!("[{},{}]", x, y),
+                None => "null".to_string(),
+            },
+            sprite.stretch,
+            sprite.visible,
+            sprite.ink,
+            sprite.blend,
+            sprite.puppet,
+            player.movie.score.get_sprite(sprite_num as i16).map(|s| s.script_instance_list.len()).unwrap_or(0),
+            player.movie.score.get_sprite(sprite_num as i16).map(|s| crate::player::score::is_active_sprite(player, s)).unwrap_or(false),
+            player.movie.score.get_sprite(sprite_num as i16).map(|s| crate::player::score::sprite_has_handler(player, s, &["mouseEnter", "mouseWithin", "mouseLeave"])).unwrap_or(false),
+            player.movie.score.get_sprite(sprite_num as i16).map(|s| s.entered).unwrap_or(false),
+            player.movie.score.get_sprite(sprite_num as i16).map(|s| s.score_sprite_list_idx).unwrap_or(0),
+        )
+    })
+}
+
+/// Dump the score's spriteDetails table: which spriteListIdx values carry
+/// behaviours, and which cast members those are. Diagnostic for a channel
+/// that draws and clicks but never receives mouseEnter.
+#[wasm_bindgen]
+pub fn get_score_details() -> String {
+    reserve_player_ref(|player| {
+        let mut keys: Vec<u32> = player.movie.score.sprite_details.keys().cloned().collect();
+        keys.sort();
+        let mut out = format!("{{\"count\":{},\"entries\":[", keys.len());
+        for (i, k) in keys.iter().enumerate() {
+            let d = &player.movie.score.sprite_details[k];
+            if i > 0 { out.push(','); }
+            out.push_str(&format!(
+                "{{\"idx\":{},\"name\":\"{}\",\"behaviors\":[{}]}}",
+                k,
+                d.name.replace('"', " "),
+                d.behaviors.iter().map(|b| format!("\"{}:{}\"", b.cast_lib, b.cast_member)).collect::<Vec<_>>().join(",")
+            ));
+        }
+        out.push_str("],\"entryLengths\":[");
+        for (i, l) in player.movie.score.entry_lengths.iter().enumerate() {
+            if i > 0 { out.push(','); }
+            out.push_str(&l.to_string());
+        }
+        out.push_str("]}");
+        out
+    })
+}
+
+/// Read a Lingo global as a display string from JS ("" when unset/VOID).
+/// Diagnostic companion to `set_lingo_global` — lets a host page assert VM
+/// state (e.g. that startMovie ran and consumed a seeded value) without
+/// scraping pixels.
+#[wasm_bindgen]
+pub fn get_lingo_global(name: String) -> String {
+    reserve_player_mut(|player| {
+        let sym = Symbol::from_str(&name);
+        match player.globals.get(&sym) {
+            Some(datum_ref) => {
+                // Plain strings come back raw; everything else (ints, lists,
+                // VOID, ...) via the debug formatter.
+                match player.get_datum(datum_ref).string_value() {
+                    Ok(v) => v,
+                    Err(_) => crate::player::datum_formatting::format_datum(datum_ref, player),
+                }
+            }
+            None => String::new(),
+        }
+    })
+}
+
 /// The projector's `--doBefore`: Lingo evaluated once BEFORE the movie loads.
 #[wasm_bindgen]
 pub fn set_startup_do_before(code: String) {
@@ -2435,4 +2675,132 @@ pub fn start() {
         }
     }
     init_player();
+}
+
+/// Dump a film loop sprite's INTERNAL score: the live position of every
+/// channel inside the loop, plus the offset used to place them in the
+/// offscreen texture. Poll this while the loop plays to see how the
+/// authored animation actually moves.
+#[wasm_bindgen]
+pub fn get_film_loop_dump(sprite_num: i32) -> String {
+    reserve_player_mut(|player| {
+        let sprite = match player.movie.score.get_sprite(sprite_num as i16) {
+            Some(s) => s,
+            None => return "{\"error\":\"no such sprite\"}".to_string(),
+        };
+        let member_ref = sprite.member.clone();
+        let sprite_loc = (sprite.loc_h, sprite.loc_v);
+        let sprite_size = (sprite.width, sprite.height);
+        let member = match member_ref.as_ref().and_then(|r| player.movie.cast_manager.find_member_by_ref(r)) {
+            Some(m) => m,
+            None => return "{\"error\":\"no member\"}".to_string(),
+        };
+        let fl = match &member.member_type {
+            crate::player::cast_member::CastMemberType::FilmLoop(fl) => fl,
+            _ => return "{\"error\":\"not a film loop\"}".to_string(),
+        };
+        let mut out = format!(
+            "{{\"name\":\"{}\",\"frame\":{},\"frames\":{},\"scoreFrames\":{},\"probe\":[{},{},{},{}],\"lastAdv\":[{},{},{},{}],\"ref\":[{},{}],\"scoreFrames\":{},\"sprite\":{{\"loc\":[{},{}],\"size\":[{},{}]}},\
+\"info\":{{\"reg\":[{},{}],\"wh\":[{},{}],\"center\":{},\"crop\":{}}},\"initial\":[{},{},{},{}],\"animated\":\"{}\",\"channels\":[",
+            member.name, fl.current_frame,
+            fl.cached_total_frames.unwrap_or(0),
+            fl.score.frame_count.unwrap_or(0),
+            crate::player::filmloop_probe::stats().0,
+            crate::player::filmloop_probe::stats().1,
+            crate::player::filmloop_probe::stats().2,
+            crate::player::filmloop_probe::stats().3,
+            crate::player::filmloop_probe::last_advanced().0,
+            crate::player::filmloop_probe::last_advanced().1,
+            crate::player::filmloop_probe::last_advanced().2,
+            crate::player::filmloop_probe::last_advanced().3,
+            member_ref.as_ref().map(|r| r.cast_lib).unwrap_or(-1),
+            member_ref.as_ref().map(|r| r.cast_member).unwrap_or(-1),
+            fl.score.frame_count.unwrap_or(0),
+            sprite_loc.0, sprite_loc.1, sprite_size.0, sprite_size.1,
+            fl.info.reg_point.0, fl.info.reg_point.1,
+            fl.info.width, fl.info.height, fl.info.center, fl.info.crop,
+            fl.initial_rect.left, fl.initial_rect.top, fl.initial_rect.right, fl.initial_rect.bottom,
+            match crate::rendering::compute_filmloop_animated_bounds(player, member_ref.as_ref().unwrap()) {
+                Some(b) => format!("{},{},{},{}", b.left, b.top, b.right, b.bottom),
+                None => "none".to_string(),
+            },
+        );
+        let mut first = true;
+        for ch in fl.score.channels.iter() {
+            let s = &ch.sprite;
+            if s.member.is_none() && s.width == 0 && s.height == 0 {
+                continue;
+            }
+            let mname = s
+                .member
+                .as_ref()
+                .and_then(|r| player.movie.cast_manager.find_member_by_ref(r))
+                .map(|m| m.name.clone())
+                .unwrap_or_default();
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str(&format!(
+                "{{\"ch\":{},\"member\":\"{}\",\"loc\":[{},{}],\"size\":[{},{}],\"visible\":{},\"ink\":{}}}",
+                ch.number, mname, s.loc_h, s.loc_v, s.width, s.height, s.visible, s.ink
+            ));
+        }
+        out.push_str("]}");
+        out
+    })
+}
+
+/// The renderer's own per-child layout for the film loop it drew most
+/// recently. Pairs with `get_film_loop_dump` when an animation moves along
+/// the wrong path.
+#[wasm_bindgen]
+pub fn get_film_loop_layout() -> String {
+    crate::player::filmloop_probe::layout()
+}
+
+/// Host-supplied text corrections: an array of [from, to] pairs. When a script
+/// assigns a member text exactly equal to `from`, `to` is stored instead. The
+/// cast's own data is never modified. Used for typos in the game's own
+/// localised strings that the publisher never fixed and never can.
+#[wasm_bindgen]
+pub fn set_text_replacements(pairs: JsValue) {
+    use wasm_bindgen::JsCast;
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let Some(arr) = pairs.dyn_ref::<js_sys::Array>() {
+        for entry in arr.iter() {
+            if let Some(pair) = entry.dyn_ref::<js_sys::Array>() {
+                if let (Some(from), Some(to)) =
+                    (pair.get(0).as_string(), pair.get(1).as_string())
+                {
+                    out.push((from, to));
+                }
+            }
+        }
+    }
+    crate::player::host_text::set_replacements(out);
+}
+
+/// The renderer's layout for the INNER film loop (a loop nested inside another,
+/// such as this game's walking credits creature). Pairs with
+/// `get_film_loop_layout`, which reports the outer one.
+#[wasm_bindgen]
+pub fn get_film_loop_inner_layout() -> String {
+    crate::player::filmloop_probe::inner_layout()
+}
+
+/// Turn the film loop layout trace on or off. Off by default: it runs inside
+/// the render loop, so building it unconditionally cost a `format!` per film
+/// loop child on every frame plus a whole-string clone, and nothing read it
+/// unless someone was debugging. Turn it on, reproduce, then read the traces.
+#[wasm_bindgen]
+pub fn set_film_loop_trace(enabled: bool) {
+    crate::player::filmloop_probe::set_tracing(enabled);
+}
+
+/// Every film loop trace from the last rendered frame, one line per nesting
+/// depth and member. See `player::filmloop_probe`.
+#[wasm_bindgen]
+pub fn get_film_loop_traces() -> String {
+    crate::player::filmloop_probe::traces()
 }

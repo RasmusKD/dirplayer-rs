@@ -627,7 +627,11 @@ impl FieldMemberHandlers {
                 |player| value.string_value(),
                 |cast_member, value| {
                     let field = cast_member.member_type.as_field_mut().unwrap();
-                    field.set_text_preserving_caret(value?.trim_end_matches('\0').to_string());
+                    let raw_text = value?.trim_end_matches('\0').to_string();
+                    // Host-supplied correction (see player::host_text).
+                    let corrected = crate::player::host_text::apply(&raw_text)
+                        .unwrap_or(raw_text);
+                    field.set_text_preserving_caret(corrected);
                     Ok(())
                 },
             ),

@@ -50,6 +50,44 @@ export function initVmCallbacks() {
   w.dirplayer_setXtraRegistry = setXtraRegistry;
   w.dirplayer_getXtraRegistry = getXtraRegistry;
   w.dirplayer_resolveAndLoadMovieXtras = resolveAndLoadMovieXtras;
+  // Projector-wrapper replication: lets a host page seed Lingo globals the
+  // way a projector's embedded startup movie would (e.g. HSprog for
+  // "Matematik i Maaneby+"), and read them back for diagnostics.
+  //   dirplayer_setLingoGlobal('HSprog', 'SV')
+  //   dirplayer_getLingoGlobal('sSprog')
+  w.dirplayer_setLingoGlobal = set_lingo_global;
+  w.dirplayer_getLingoGlobal = get_lingo_global;
+  // Sprite state as JSON, for diagnosing a wrong-looking channel
+  // (member, position, size vs the member's intrinsic size, stretch,
+  // and any text) without guessing from a screenshot.
+  //   JSON.parse(dirplayer_getSpriteInfo(10))
+  w.dirplayer_getSpriteInfo = get_sprite_info;
+  w.dirplayer_getScoreDetails = get_score_details;
+  w.dirplayer_getFilmLoopDump = get_film_loop_dump;
+  w.dirplayer_getFilmLoopLayout = get_film_loop_layout;
+  w.dirplayer_setTextReplacements = set_text_replacements;
+  w.dirplayer_getFilmLoopTraces = get_film_loop_traces;
+  // The film loop layout trace is OFF by default: it runs inside the render
+  // loop, so building it every frame cost real time for a string nothing
+  // read. Turn it on, reproduce, then read the traces.
+  //   dirplayer_setFilmLoopTrace(true)
+  w.dirplayer_setFilmLoopTrace = set_film_loop_trace;
+  // Real pause: holds the frame loop between frames, so the playhead,
+  // timers and sound stay put and resuming is instant.
+  //   dirplayer_setPaused(true)
+  w.dirplayer_setPaused = set_paused;
+  w.dirplayer_isPaused = is_paused;
+  // Measuring hooks. `evalCommand` runs a line of Lingo against the live
+  // movie (the same path the debugger uses), which lets a probe change one
+  // property of one sprite and re-measure, instead of rebuilding the engine
+  // to test a hypothesis. `printMemberBitmapHex` dumps a bitmap member's RGBA
+  // to the console so its pixels can be compared against the projector's.
+  w.dirplayer_evalCommand = eval_command;
+  w.dirplayer_printMemberBitmapHex = player_print_member_bitmap_hex;
+  w.dirplayer_getFilmLoopInnerLayout = get_film_loop_inner_layout;
+  // Members whose text must never be drawn (see set_blanked_members).
+  //   dirplayer_setBlankedMembers(['LicensTXT'])
+  w.dirplayer_setBlankedMembers = set_blanked_members;
 
   // Expose trace log download on window
   (window as any).downloadTraceLog = () => {

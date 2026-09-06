@@ -2360,7 +2360,10 @@ impl TextMemberHandlers {
                 |player| value.string_value(),
                 |cast_member, value| {
                     let text_member = cast_member.member_type.as_text_mut().unwrap();
-                    let new_text = value?.trim_end_matches('\0').to_string();
+                    let raw_text = value?.trim_end_matches('\0').to_string();
+                    // Host-supplied correction (see player::host_text).
+                    let new_text = crate::player::host_text::apply(&raw_text)
+                        .unwrap_or(raw_text);
 
                     let old_color = text_member.html_styled_spans.first()
                         .and_then(|s| s.style.color)
