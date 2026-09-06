@@ -139,7 +139,7 @@ pub fn is_recording() -> bool {
 /// Monotonic clock in fractional milliseconds. Uses `performance.now()` in the
 /// browser (microsecond precision) and `Instant` elapsed on native.
 #[cfg(target_arch = "wasm32")]
-fn now_ms() -> f64 {
+pub fn now_ms() -> f64 {
     web_sys::window()
         .and_then(|w| w.performance())
         .map(|p| p.now())
@@ -147,7 +147,7 @@ fn now_ms() -> f64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn now_ms() -> f64 {
+pub fn now_ms() -> f64 {
     use std::time::Instant;
     static BASE: OnceLock<Instant> = OnceLock::new();
     let base = BASE.get_or_init(Instant::now);

@@ -76,6 +76,7 @@ impl DirectorFile {
         reader: &mut BinaryReader,
     ) -> Result<DirectorFile, String> {
         reader.set_endian(binary_reader::Endian::Big);
+        reset_inflate_stats();
 
         let mut chunk_container = ChunkContainer {
             cached_chunk_views: HashMap::new(),
@@ -101,6 +102,7 @@ impl DirectorFile {
             read_memory_map(reader, &mut chunk_container.chunk_info)?;
         } else if codec == FOURCC("FGDM") || codec == FOURCC("FGDC") {
             after_burned = true;
+            let t = crate::player::profiling::now_ms();
             ils_body_offset = read_after_burner_map(
                 reader,
                 &mut chunk_container.cached_chunk_views,
@@ -108,6 +110,7 @@ impl DirectorFile {
                 &mut chunk_container.ils_chunk_ids,
             )
             .unwrap();
+            record_phase("abmap", crate::player::profiling::now_ms() - t);
         } else {
             return Err("Invalid codec".to_owned());
         }
@@ -119,21 +122,31 @@ impl DirectorFile {
             lctx_capital_x: false,
         };
 
+        let __t = crate::player::profiling::now_ms();
         let key_table = read_key_table(reader, &mut chunk_container, &mut rifx).unwrap();
+        record_phase("keytable", crate::player::profiling::now_ms() - __t);
 
+        let __t = crate::player::profiling::now_ms();
         let config = read_config(reader, &mut chunk_container, &mut rifx).unwrap();
+        record_phase("config", crate::player::profiling::now_ms() - __t);
 
         rifx.dir_version = human_version(config.director_version);
         let dot_syntax = rifx.dir_version >= 700;
 
         // info!("width={}, height={}", config.movie_right - config.movie_left, config.movie_bottom - config.movie_top);
 
+        let __t = crate::player::profiling::now_ms();
         let (cast_entries, casts) =
             read_casts(reader, &mut chunk_container, &mut rifx, &key_table, &config).unwrap();
+        record_phase("casts", crate::player::profiling::now_ms() - __t);
 
+        let __t = crate::player::profiling::now_ms();
         let font_table = parse_font_table(reader, &mut chunk_container, &mut rifx);
+        record_phase("fonts", crate::player::profiling::now_ms() - __t);
 
+        let __t = crate::player::profiling::now_ms();
         let score = get_score_chunk(reader, &mut chunk_container, &mut rifx);
+        record_phase("score", crate::player::profiling::now_ms() - __t);
 
         let tile_list = get_tile_list_chunk(reader, &mut chunk_container, &mut rifx);
 
@@ -141,11 +154,17 @@ impl DirectorFile {
 
         let score_order = get_score_order_chunk(reader, &mut chunk_container, &mut rifx);
 
+        let __t = crate::player::profiling::now_ms();
         let media = get_media_chunk(reader, &mut chunk_container, &mut rifx);
+        record_phase("media", crate::player::profiling::now_ms() - __t);
 
+        let __t = crate::player::profiling::now_ms();
         let xmedia = get_xmedia_chunk(reader, &mut chunk_container, &mut rifx);
+        record_phase("xmedia", crate::player::profiling::now_ms() - __t);
 
+        let __t = crate::player::profiling::now_ms();
         let cast_info = get_cast_info_chunk(reader, &mut chunk_container, &mut rifx);
+        record_phase("castinfo", crate::player::profiling::now_ms() - __t);
 
         let effect = get_effect_chunk(reader, &mut chunk_container, &mut rifx);
 
@@ -1151,6 +1170,73 @@ pub fn read_director_file_bytes(
     );
 }
 
+thread_local! {
+    /// (inflate ms, bytes produced, chunks) for the movie currently being read.
+    /// Reset at the top of `DirectorFile::read`, reported by the caller's
+    /// `[LOAD-TIMING]` line. See S22: the loading screen is chunk-parse, and
+    /// this says how much of that is zlib and how much is ours.
+    static INFLATE_STATS: std::cell::Cell<(f64, usize, u32)> = std::cell::Cell::new((0.0, 0, 0));
+}
+
+thread_local! {
+    /// (phase name, ms) for the movie currently being read, in order.
+    static READ_PHASES: std::cell::RefCell<Vec<(&'static str, f64)>> =
+        std::cell::RefCell::new(Vec::new());
+    /// Per-FOURCC deserialisation cost, so a slow phase can be attributed to a
+    /// chunk KIND rather than left as one lump.
+    static CHUNK_KIND_MS: std::cell::RefCell<Vec<(u32, f64, u32)>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+fn record_phase(name: &'static str, ms: f64) {
+    READ_PHASES.with(|c| c.borrow_mut().push((name, ms)));
+}
+
+fn record_chunk_kind(fourcc: u32, ms: f64) {
+    CHUNK_KIND_MS.with(|c| {
+        let mut v = c.borrow_mut();
+        if let Some(e) = v.iter_mut().find(|e| e.0 == fourcc) {
+            e.1 += ms;
+            e.2 += 1;
+        } else {
+            v.push((fourcc, ms, 1));
+        }
+    });
+}
+
+/// One line naming the phases that cost real time, heaviest chunk kinds last.
+pub fn read_phase_report() -> String {
+    let mut phases: Vec<String> = READ_PHASES.with(|c| {
+        c.borrow()
+            .iter()
+            .filter(|(_, ms)| *ms >= 1.0)
+            .map(|(n, ms)| format!("{} {:.0}ms", n, ms))
+            .collect()
+    });
+    let mut kinds: Vec<(u32, f64, u32)> = CHUNK_KIND_MS.with(|c| c.borrow().clone());
+    kinds.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let kinds: Vec<String> = kinds
+        .iter()
+        .filter(|e| e.1 >= 1.0)
+        .take(6)
+        .map(|e| format!("{} {}x {:.0}ms", fourcc_to_string(e.0), e.2, e.1))
+        .collect();
+    if !kinds.is_empty() {
+        phases.push(format!("[chunks: {}]", kinds.join(", ")));
+    }
+    phases.join(", ")
+}
+
+pub fn reset_inflate_stats() {
+    INFLATE_STATS.with(|c| c.set((0.0, 0, 0)));
+    READ_PHASES.with(|c| c.borrow_mut().clear());
+    CHUNK_KIND_MS.with(|c| c.borrow_mut().clear());
+}
+
+pub fn inflate_stats() -> (f64, usize, u32) {
+    INFLATE_STATS.with(|c| c.get())
+}
+
 /// Ensure chunk `id` is decompressed and present in `cached_chunk_views`.
 ///
 /// Returns nothing on purpose. The cache OWNS the bytes for the rest of the
@@ -1219,8 +1305,13 @@ fn ensure_chunk_data(
                     if info.compression_id == ZLIB_COMPRESSION_GUID
                         || info.compression_id == ZLIB_COMPRESSION_GUID2
                     {
+                        let t0 = crate::player::profiling::now_ms();
                         let inflated = reader.read_zlib_bytes(info.len)
                             .map_err(|e| format!("Chunk {}: zlib decompression failed: {}", id, e))?;
+                        INFLATE_STATS.with(|c| {
+                            let (ms, bytes, n) = c.get();
+                            c.set((ms + (crate::player::profiling::now_ms() - t0), bytes + inflated.len(), n + 1));
+                        });
                         uncomp_buf = Some(inflated);
                     } else if info.compression_id == SND_COMPRESSION_GUID {
                         // Handle Director SND compressed chunk
@@ -1350,6 +1441,7 @@ pub fn get_chunk(
     //   return deserialized_chunks.get(&id).unwrap();
     // }
 
+    let __t = crate::player::profiling::now_ms();
     ensure_chunk_data(reader, chunk_container, rifx, fourcc, id)?;
     let endian = reader.endian;
     // Hand the cached bytes to the chunk reader by MOVE, then give them back.
@@ -1381,6 +1473,7 @@ pub fn get_chunk(
             .cached_chunk_views
             .insert(id, std::mem::take(&mut chunk_reader.data));
     }
+    record_chunk_kind(fourcc, crate::player::profiling::now_ms() - __t);
     out
     // deserialized_chunks.insert(id, chunk);
     // return deserialized_chunks.get(&id).unwrap();

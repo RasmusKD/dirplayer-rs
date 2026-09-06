@@ -1176,6 +1176,10 @@ impl DirPlayer {
         // rebuild the cast (the net loader often can't re-fetch by name once loaded).
         self.movie_reload_data = Some((data_bytes, file_name_owned, base_url));
         self.load_movie_from_dir(movie_file).await;
+        // Phase timings for the loading screen. Measured on this game: the
+        // 35 MB main.dcr FETCHES in 86 ms but the whole transition takes ~10 s,
+        // so the cost is here, not on the wire.
+        let t_fetched = crate::player::profiling::now_ms();
         Ok(())
     }
 
@@ -1185,7 +1189,37 @@ impl DirPlayer {
     /// runs the entire engine against itself — its own scripts/score/cast — via
     /// the active-player indirection; the loader keeps running independently.
     /// Synchronous: the async load+play happens in a spawned task bound to the
+        let t_parsed = crate::player::profiling::now_ms();
     /// sub's id (a manual `ACTIVE_PLAYER_ID` set can't span an await here, since
+        let t_loaded = crate::player::profiling::now_ms();
+        // Straight to the console for the same reason as the cast+score line
+        // below: the browser logger is initialised at Level::Error, so `warn!`
+        // is dropped before it reaches DevTools. This measurement was shipped
+        // once already and could never be read.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (inflate_ms, inflate_bytes, inflate_n) =
+                crate::director::file::inflate_stats();
+            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "[LOAD-TIMING] {}: chunk-parse {:.0} ms (zlib {:.0} ms for {} chunks / {:.1} MB; {}), cast+score {:.0} ms, total {:.0} ms",
+                path,
+                t_parsed - t_fetched,
+                inflate_ms,
+                inflate_n,
+                inflate_bytes as f64 / 1048576.0,
+                crate::director::file::read_phase_report(),
+                t_loaded - t_parsed,
+                t_loaded - t_fetched,
+            )));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        warn!(
+            "[LOAD-TIMING] {}: chunk-parse {:.0} ms, cast+score {:.0} ms, total {:.0} ms",
+            path,
+            t_parsed - t_fetched,
+            t_loaded - t_parsed,
+            t_loaded - t_fetched,
+        );
     /// the enclosing task's `WithActivePlayer` wrapper would restore it).
     pub fn spawn_nested_player(&self, member_ref: CastMemberRef) {
         if nested_player_id(&member_ref).is_some() {
@@ -1441,6 +1475,11 @@ impl DirPlayer {
             .await;
 
         // Apply fake movie path override if set (moviePath/movieName use
+        // Where the loading screen's time actually goes. Measured on this game:
+        // the 35 MB main.dcr FETCHES in 86 ms while the whole first load takes
+        // ~10 s, so the cost is in here, not on the wire.
+        let t_load_start = crate::player::profiling::now_ms();
+        let loaded_name = dir.file_name.to_string();
         // this, but net_manager.base_path stays real for actual file
         // fetching).
         //
@@ -1449,6 +1488,14 @@ impl DirPlayer {
         //      label-only, no URL rewrite.
         //   2. external_params["_moviePath"] — same semantics as #1; just
         //      a more declarative way to set it (drop a key in the
+        // Straight to the console: the `warn!` macro's output never reached it
+        // from here, and this number is the whole point of the measurement.
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "[LOAD-TIMING] {}: cast+score {:.0} ms",
+            loaded_name,
+            crate::player::profiling::now_ms() - t_load_start,
+        )));
         //      externalParams the host passes to dirplayer).
         //   3. `movie_path_override` (set_movie_path_override JS API) —
         //      rewrite-mode: registers `net_manager.override_base_path`

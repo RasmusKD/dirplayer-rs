@@ -71,6 +71,41 @@ pub struct CastLib {
     pub font_table: HashMap<u16, String>,
 }
 
+thread_local! {
+    /// Per-member-type build cost for the movie currently loading, in ms.
+    /// Drained by `take_member_build_report` when the load finishes. Exists to
+    /// answer S22: the loading screen costs seconds and nobody knew which
+    /// member type was paying for it.
+    static MEMBER_BUILD_MS: std::cell::RefCell<Vec<(String, f64, u32)>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+fn record_member_build(kind: crate::director::enums::MemberType, ms: f64) {
+    let name = format!("{:?}", kind);
+    MEMBER_BUILD_MS.with(|c| {
+        let mut v = c.borrow_mut();
+        if let Some(e) = v.iter_mut().find(|e| e.0 == name) {
+            e.1 += ms;
+            e.2 += 1;
+        } else {
+            v.push((name, ms, 1));
+        }
+    });
+}
+
+/// Drain the accumulator into a one-line summary, heaviest type first.
+pub fn take_member_build_report() -> String {
+    MEMBER_BUILD_MS.with(|c| {
+        let mut v = std::mem::take(&mut *c.borrow_mut());
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        v.iter()
+            .filter(|e| e.1 >= 1.0)
+            .map(|e| format!("{} {}x {:.0}ms", e.0, e.2, e.1))
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
 impl CastLib {
     pub fn max_member_id(&self) -> u32 {
         *self.members.keys().max().unwrap_or(&0)
@@ -399,10 +434,10 @@ impl CastLib {
         self.font_table = font_table.clone();
         self.state = CastLibState::Loaded;
         for (id, member_def) in &cast_def.members {
-            self.insert_member(
-                *id,
-                CastMember::from(self.number, *id, member_def, &self.lctx, bitmap_manager, self.dir_version, self.palette_id_offset, font_table),
-            );
+            let t_member = crate::player::profiling::now_ms();
+            let built = CastMember::from(self.number, *id, member_def, &self.lctx, bitmap_manager, self.dir_version, self.palette_id_offset, font_table);
+            record_member_build(member_def.chunk.member_type, crate::player::profiling::now_ms() - t_member);
+            self.insert_member(*id, built);
             JsApi::on_cast_member_name_changed(CastMemberRefHandlers::get_cast_slot_number(
                 self.number,
                 *id,

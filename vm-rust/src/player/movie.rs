@@ -183,10 +183,21 @@ impl Movie {
             right: file.config.movie_right as i32,
             bottom: file.config.movie_bottom as i32,
         };
+        let t_casts = crate::player::profiling::now_ms();
         self.cast_manager
             .load_from_dir(&file, net_manager, bitmap_manager, dir_cache)
             .await;
+        let t_score = crate::player::profiling::now_ms();
         self.score.load_from_dir(&file);
+        // Attribution for the "Vent venligst" screen: casts vs score, and
+        // inside the casts, which member type paid for it. See S22.
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "[LOAD-TIMING]   casts {:.0} ms ({}), score {:.0} ms",
+            t_score - t_casts,
+            crate::player::cast_lib::take_member_build_report(),
+            crate::player::profiling::now_ms() - t_score,
+        )));
         self.file_name = file.file_name.to_string();
         self.frame_rate = file.config.frame_rate;
         self.file = Some(file);
