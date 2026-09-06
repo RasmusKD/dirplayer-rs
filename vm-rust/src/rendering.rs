@@ -2426,7 +2426,8 @@ pub fn render_score_to_bitmap_with_offset(
                     let sel_hi = field_member.sel_start.max(field_member.sel_end).max(0);
                     let has_selection = is_focused && sel_lo != sel_hi;
                     // Same line stride bitmap.draw_text_wrapped uses internally.
-                    let line_h = font.char_height as i32 + field_member.fixed_line_space as i32;
+                    let line_h =
+                        crate::player::font::line_stride(&font, field_member.fixed_line_space) as i32;
                     let wrap_w = if field_member.word_wrap { sprite.width } else { 0 };
 
                     if has_selection {

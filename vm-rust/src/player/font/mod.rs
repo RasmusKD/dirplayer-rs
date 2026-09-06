@@ -60,6 +60,174 @@ pub struct FontManager {
     pub pfr_enabled: bool,
 }
 
+thread_local! {
+    /// One log line per distinct font actually used to draw text.
+    static LOGGED_FONTS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Report each distinct text stride once: which family and size a line was
+/// laid out with, what the member asked for, and what came out. Text members
+/// go through the canvas path, not the bitmap-font one, so this is where the
+/// stride behind a screen's layout can actually be read off.
+pub fn log_text_stride_once(
+    family: &str,
+    size_px: f64,
+    par_line_spacing: Option<f64>,
+    fixed_line_space: u16,
+    result: f64,
+) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let key = format!("{}|{:.1}|{:?}|{}", family, size_px, par_line_spacing, fixed_line_space);
+        let first = LOGGED_FONTS.with(|c| c.borrow_mut().insert(key));
+        if first {
+            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "[TEXT-STRIDE] spec='{}' -> family='{}' size={:.1} par_ls={:?} fixed={} -> stride {:.1} (ratio {:.3}); boundingbox={:?}",
+                family, css_font_family(family), size_px, par_line_spacing, fixed_line_space, result,
+                if size_px > 0.0 { result / size_px } else { 0.0 },
+                measure_font_line_ratio_cached(&css_font_family(family)),
+            )));
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (family, size_px, par_line_spacing, fixed_line_space, result);
+    }
+}
+
+/// The baseline-to-baseline stride for one line of this font.
+///
+/// Measuring and drawing MUST agree on this: when they disagreed, text was laid
+/// out against a box measured the other way and the block drifted (S1). So both
+/// sides call this.
+pub fn line_stride(font: &BitmapFont, fixed_line_space: u16) -> u16 {
+    if fixed_line_space > 0 {
+        return fixed_line_space;
+    }
+    font.char_height
+}
+
+/// Line height for a SYSTEM (non-PFR) font, measured from the browser.
+///
+/// Director lays text out on the font's own line height: ascent + descent +
+/// leading. The fallback here is the point size itself, which makes every
+/// multi-line block too short - so it must only be reached when the font really
+/// cannot be measured.
+fn system_font_line_height(font_name: &str, font_size: u16) -> u16 {
+    if font_size == 0 {
+        return font_size;
+    }
+    let resolved = css_font_family(font_name);
+    let family: &str = if resolved.is_empty() { "Arial" } else { &resolved };
+    match measure_font_line_ratio_cached(family) {
+        Some(r) if r > 1.0 && r <= 2.0 => ((font_size as f32) * r).round() as u16,
+        _ => font_size,
+    }
+}
+
+/// Public form of the measured line height, in pixels, for renderers that step
+/// line by line. Measure and render must agree on the stride or the layout
+/// drifts against a box measured the other way.
+pub fn system_line_height_px(font_face: &str, size_px: f64) -> f64 {
+    if size_px <= 0.0 {
+        return size_px;
+    }
+    let resolved = css_font_family(font_face);
+    let family: &str = if resolved.is_empty() { "Arial" } else { &resolved };
+    match measure_font_line_ratio_cached(family) {
+        Some(r) if r > 1.0 && r <= 2.0 => size_px * r as f64,
+        _ => size_px,
+    }
+}
+
+/// Cached ratio lookup shared by the u16 and f64 entry points.
+fn measure_font_line_ratio_cached(family: &str) -> Option<f32> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static RATIOS: RefCell<HashMap<String, Option<f32>>> = RefCell::new(HashMap::new());
+    }
+    RATIOS.with(|cache| {
+        if let Some(r) = cache.borrow().get(family) {
+            return *r;
+        }
+        let measured = measure_font_line_ratio(family);
+        cache.borrow_mut().insert(family.to_string(), measured);
+        measured
+    })
+}
+
+/// The family out of a CSS font value.
+///
+/// Text segments carry a whole shorthand - "14px Verdana", "bold italic 24px
+/// Verdana" - not a family name. Feeding that to `ctx.font = "100px {family}"`
+/// builds invalid CSS, the canvas silently keeps its default font, and the
+/// measured ratio comes back as if the font were 10px sans-serif (0.11). That
+/// is outside the sane range, so the caller fell back to stepping by the point
+/// size itself: measured on an instruction screen, a 14 px font stepped 14 px
+/// where the projector steps 17.
+///
+/// Everything up to and including the last size token is style, weight and
+/// size; the family is what follows.
+pub fn css_font_family(spec: &str) -> String {
+    let bytes = spec.as_bytes();
+    let mut family_start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            // A size token is digits followed by a unit; take the last one.
+            let rest = &spec[i..];
+            for unit in ["px", "pt", "em", "%"] {
+                if rest.starts_with(unit) {
+                    family_start = i + unit.len();
+                    break;
+                }
+            }
+            if start == i {
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    let family = spec[family_start..].trim().trim_start_matches('/').trim();
+    if family.is_empty() {
+        spec.trim().to_string()
+    } else {
+        family.to_string()
+    }
+}
+
+/// ascent + descent at a reference size, as a multiple of that size.
+fn measure_font_line_ratio(family: &str) -> Option<f32> {
+    use wasm_bindgen::JsCast;
+    // Measured at a LARGE reference size on purpose. The browser reports these
+    // metrics quantised to whole pixels, so at 100 px Verdana comes back as
+    // 122/100 = 1.2200 where the font's real ratio is 2489/2048 = 1.2153. That
+    // 0.004 is 0.13 px per line at 14 px, which accumulated to a whole pixel
+    // across the seven blank lines on an instruction screen - measured against
+    // the projector with sub-pixel centroids. At 1000 px the quantisation is a
+    // tenth of that.
+    const REF: f64 = 1000.0;
+    let doc = web_sys::window()?.document()?;
+    let canvas: web_sys::HtmlCanvasElement =
+        doc.create_element("canvas").ok()?.dyn_into().ok()?;
+    let ctx: web_sys::CanvasRenderingContext2d =
+        canvas.get_context("2d").ok()??.dyn_into().ok()?;
+    ctx.set_font(&format!("{}px {}", REF as i32, family));
+    let metrics = ctx.measure_text("Hg").ok()?;
+    let height = metrics.font_bounding_box_ascent() + metrics.font_bounding_box_descent();
+    if height <= 0.0 {
+        return None;
+    }
+    Some((height / REF) as f32)
+}
+
 #[derive(Clone, Debug)]
 pub struct BitmapFont {
     pub bitmap_ref: BitmapRef,
@@ -77,6 +245,17 @@ pub struct BitmapFont {
     pub font_style: u8,
     pub char_widths: Option<Vec<u16>>,
     pub pfr_native_size: u16,
+    /// The font's own baseline-to-baseline distance in pixels, when it carries
+    /// one (PFR Type 5). 0 when the font has none.
+    ///
+    /// NOTHING READS THIS YET. It is surfaced because the value was being
+    /// parsed and thrown away, and because "how far apart are the lines" is a
+    /// question this codebase has had to answer twice. The stride actually used
+    /// is `line_stride`; the line-spacing defect that prompted this turned out
+    /// to be elsewhere (a CSS shorthand fed in as a font family - see
+    /// `css_font_family`), so switching to this value was never justified by a
+    /// measurement and is not done.
+    pub pfr_line_spacing: u16,
 }
 
 impl BitmapFont {
@@ -352,6 +531,7 @@ impl FontManager {
                             font_style: font_data.font_info.style,
                             char_widths: Some(final_char_widths),
                             pfr_native_size: font_data.font_info.size,
+                            pfr_line_spacing: rasterized.line_spacing as u16,
                         };
 
                         let rc_font = Rc::new(font);
@@ -454,6 +634,7 @@ impl FontManager {
                                 font_style: style.unwrap_or(0),
                                 char_widths: Some(final_char_widths),
                                 pfr_native_size: 0,
+                                pfr_line_spacing: rasterized.line_spacing as u16,
                             };
 
                             let rc_font = Rc::new(font);
@@ -616,6 +797,7 @@ impl FontManager {
                                 font_style: font_data.font_info.style,
                                 char_widths: font_data.char_widths.clone(),
                                 pfr_native_size: font_data.font_info.size,
+                                pfr_line_spacing: 0,
                             };
 
                             let rc_font = Rc::new(font);
@@ -846,6 +1028,7 @@ impl FontManager {
             font_style,
             char_widths: Some(rasterized.char_widths),
             pfr_native_size: 0,
+            pfr_line_spacing: rasterized.line_spacing as u16,
         };
 
         Some(Rc::new(font))
@@ -997,6 +1180,7 @@ pub async fn player_load_system_font(path: &str) {
                     font_style: 0,
                     char_widths: None,
                     pfr_native_size: 0,
+                    pfr_line_spacing: 0,
                 };
 
                 let rc_font = Rc::new(font.clone());
@@ -1726,7 +1910,7 @@ pub fn measure_text(
             cell_h
         }
     } else if font.font_size > 0 {
-        font.font_size
+        system_font_line_height(&font.font_name, font.font_size)
     } else {
         font.char_height
     };
@@ -1838,7 +2022,7 @@ pub fn measure_text_wrapped(
             cell_h
         }
     } else if font.font_size > 0 {
-        font.font_size
+        system_font_line_height(&font.font_name, font.font_size)
     } else {
         font.char_height
     };

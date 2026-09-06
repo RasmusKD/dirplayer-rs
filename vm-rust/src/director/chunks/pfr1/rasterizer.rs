@@ -442,6 +442,15 @@ pub struct RasterizedFont {
     pub first_char: u8,
     /// Number of chars
     pub num_chars: usize,
+    /// The font's own line spacing in pixels, from the PFR Type 5 extra item,
+    /// or 0 when the font does not carry one.
+    ///
+    /// This is NOT the same as `cell_height`. The cell is the glyph atlas box
+    /// (ink plus descender); the line spacing is how far Director steps from
+    /// one baseline to the next, and it is larger. Stepping by the cell is
+    /// what made every multi-line block in the measured movie too short: measured on
+    /// its instruction screen, the projector steps 17.3 px where we stepped 14.
+    pub line_spacing: usize,
 }
 
 /// Steepen alpha ramp for crisper glyph edges.
@@ -595,6 +604,13 @@ pub fn rasterize_pfr1_font_with_options(
     let cell_width = (set_width_px.ceil() as usize)
         .max(max_bbox_width_px.ceil() as usize)
         .max(1);
+    // The font's own line spacing, scaled the same way the Type 5 cell is.
+    let type5_line_spacing_px = if phys.has_extra_item_type5 {
+        let raw = phys.extra_type5_line_spacing as i32;
+        ((raw * target_height as i32) / 256).max(0) as usize
+    } else {
+        0
+    };
     let cell_height = {
         let pixel_scale_metric = if outline_res > 0.0 {
             target_height as f32 / outline_res
@@ -1217,5 +1233,6 @@ pub fn rasterize_pfr1_font_with_options(
         char_widths,
         first_char,
         num_chars,
+        line_spacing: type5_line_spacing_px,
     }
 }

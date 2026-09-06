@@ -3684,13 +3684,8 @@ impl Bitmap {
         line_spacing: u16,
         top_spacing: i16,
     ) -> i32 {
-        // fixedLineSpace is the absolute per-line height when set (see the note
-        // in `draw_text`); fall back to the natural glyph cell when unset.
-        let line_height = if line_spacing > 0 {
-            line_spacing as i32
-        } else {
-            font.char_height as i32
-        };
+        // One shared answer for measuring and drawing; see `font::line_stride`.
+        let line_height = crate::player::font::line_stride(font, line_spacing) as i32;
 
         // Break text into wrapped lines
         let lines = Self::wrap_text_lines(text, font, max_width);

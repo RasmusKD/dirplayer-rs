@@ -928,6 +928,7 @@ impl CastManager {
                             font_style,
                             char_widths: font_data.char_widths.clone(),
                             pfr_native_size: font_size,
+                            pfr_line_spacing: 0,
                         };
 
                         let rc_font = Rc::new(font);

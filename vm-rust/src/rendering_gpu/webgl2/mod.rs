@@ -2561,7 +2561,17 @@ impl WebGL2Renderer {
                     // Fill in defaults from text_member and apply runtime overrides when needed.
                     // Preserve span colors from XMED styles. Member foreColor is only fallback.
 
-                    let styled_spans_with_defaults: Option<Vec<StyledSpan>> = if text_member.html_styled_spans.is_empty() {
+                    // Spans describe the text they were built from. If the
+                    // member's text has since changed by a route that did not
+                    // rebuild them, they are stale and rendering them shows the
+                    // PREVIOUS content: the measured movie rewrites its labels line by
+                    // line when the language changes, and the screen kept the
+                    // cast's baked-in English while the member held Danish.
+                    let spans_match_text: bool = {
+                        let joined: String = text_member.html_styled_spans.iter().map(|s| s.text.as_str()).collect();
+                        joined == text_member.text
+                    };
+                    let styled_spans_with_defaults: Option<Vec<StyledSpan>> = if text_member.html_styled_spans.is_empty() || !spans_match_text {
                         None
                     } else {
                         Some(text_member.html_styled_spans.iter().map(|span| {

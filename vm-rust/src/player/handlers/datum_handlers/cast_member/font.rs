@@ -995,10 +995,34 @@ impl FontMemberHandlers {
         // underline above); only color needed this per-pixel routing because
         // the text is rendered white-on-black for coverage.
         let mut seg_color_rects: Vec<(f64, f64, f64, f64, (u8, u8, u8))> = Vec::new();
+        // How far outside its own cell a glyph may reach and still count as
+        // part of that run. Half the point size covers rings, accents and
+        // descenders without letting one paragraph's colour bleed into the
+        // next; beyond it the fallback still applies.
+        let max_glyph_overshoot: f64 = lines
+            .iter()
+            .map(|l| l.max_font_px)
+            .fold(0.0_f64, f64::max)
+            .max(12.0)
+            * 0.5;
+
+        // A BLANK line carries no segments, so it has no font of its own. Its
+        // height still has to match the text around it: this member builds the
+        // gap for the two icons out of SEVEN blank lines in a row, and a blank
+        // line that measures as some other font makes the whole block below it
+        // ride up. S1 fixed the blank line's SIZE the same way; the family was
+        // left behind, so a 14 px blank line was measured as Arial (ratio 1.12,
+        // stride 15.7) between Verdana lines (ratio 1.22, stride 17.1).
+        let member_family: String = lines
+            .iter()
+            .flat_map(|l| l.segments.iter())
+            .map(|sg| sg.style.font.clone())
+            .find(|f| !f.is_empty())
+            .unwrap_or_default();
 
         let mut y = top_spacing.max(0) as f64;
         let mut prev_par_idx: Option<u16> = None;
-        for line in &lines {
+        for (li, line) in lines.iter().enumerate() {
             // `y` is a LAYOUT coordinate in logical (1x) units; the on-canvas
             // top of the line is `y + start_y`, because ctx.translate(0,
             // start_y) is applied before layout. Terminate once the line has
@@ -1035,6 +1059,23 @@ impl FontMemberHandlers {
                         .unwrap_or(0);
                     y += (prev_sa + this_sb) as f64;
                 }
+            } else if li == 0 {
+                // The FIRST paragraph's space-before, which the branch above
+                // can never reach: it fires on a transition, and the first
+                // paragraph has nothing to transition from. So every member
+                // whose opening paragraph carries a `\sb` was drawn that much
+                // too high, silently, for as long as this code has existed.
+                //
+                // Measured on an instruction page: after the blank-first-
+                // line fix the page still sat 4 px high, the same 4 on all
+                // seven text rows, so it was one missing offset at the top and
+                // not a per-line error. 4 px is no font's line height at any
+                // size in this member, which is what ruled out the blank line
+                // as the remaining cause and pointed here instead.
+                y += this_par_idx
+                    .and_then(|idx| par_infos.get(idx as usize))
+                    .map(|pi| pi.top_spacing)
+                    .unwrap_or(0) as f64;
             }
 
             // Alignment uses the full canvas width (`render_width`), NOT
@@ -1064,6 +1105,113 @@ impl FontMemberHandlers {
                     }
                 }
                 TextAlignment::Justify => 0.0,
+            };
+
+            // An EMPTY line has no segments, so it has no font size of its
+            // own. Falling back to a hard-coded 12px made blank lines shorter
+            // than the text around them, which quietly shrinks any layout
+            // built out of blank lines: the measured movie spaces its instruction page
+            // with eight consecutive RETURNs to open a gap for two inline
+            // icons, and the gap came out about 30px short, so the paragraph
+            // below collided with the icons. Inherit the nearest real font
+            // size instead (previous line, else next, else 12).
+            let line_font_px = if line.max_font_px > 0.0 {
+                line.max_font_px
+            } else {
+                lines[..li].iter().rev().find_map(|l| if l.max_font_px > 0.0 { Some(l.max_font_px) } else { None })
+                    .or_else(|| lines[li + 1..].iter().find_map(|l| if l.max_font_px > 0.0 { Some(l.max_font_px) } else { None }))
+                    .unwrap_or(12.0)
+            };
+            // Per-line stride priority (matches the PFR-styled multi-span
+            // path):
+            //  1. This line's `par_info.line_spacing` when non-zero. Director
+            //     stores per-paragraph stride here (RTF `\sl<twips>`) and
+            //     uses it in preference to the global `fixedLineSpace`. For
+            //     empty paragraphs (no glyphs on the line) we apply the
+            //     authored value verbatim; for content lines we clamp to
+            //     the line's font size to avoid clipping characters when a
+            //     small `\sl` value sits below the glyph cell — this matches
+            //     Director treating `\sl` as a minimum on content lines.
+            //     Junkbot V1 brick-info member 139 uses par_info[2] with
+            //     line_spacing=6 for the single empty line before "eyeBOT";
+            //     without this lookup the stride defaults to 12 and pushes
+            //     eyeBOT ~6 px below Director's layout.
+            //  2. Global `fixed_line_space` (member-level fixedLineSpace).
+            //  3. The line's own `max_font_px` (the natural glyph cell).
+            let par_line_spacing = this_par_idx
+                .and_then(|idx| par_infos.get(idx as usize))
+                .map(|pi| pi.line_spacing)
+                .filter(|&s| s > 0)
+                .map(|s| s as f64);
+            let effective_line_height = if let Some(par_ls) = par_line_spacing {
+                if line.segments.is_empty() || fixed_line_space > 0 {
+                    // A member-level fixedLineSpace is a HARD line height in
+                    // Director, not a minimum: every line is exactly that
+                    // tall and an oversized font simply spills out of its
+                    // box. Clamping up to the font size here put the
+                    // heading of a measured instruction page
+                    // 4 px high. That page opens with an empty line under
+                    // fixedLineSpace 20, then a 36 px heading: two 20 px
+                    // boxes make 40, the glyphs sit at the bottom of theirs,
+                    // so their top belongs at 40 - 36 = 4. The clamp made
+                    // the second box 36 and lost exactly those 4 px, which
+                    // is what the projector comparison measured. The
+                    // clamp stays for paragraph-only `\sl`, where Director
+                    // does treat the value as a minimum (Junkbot V1).
+                    par_ls
+                } else {
+                    par_ls.max(line_font_px)
+                }
+            } else if fixed_line_space > 0 {
+                fixed_line_space as f64
+            } else {
+                // The stride is the FONT's line height, not the point size.
+                // Measurement already uses the measured ratio; stepping by the
+                // bare point size made the render creep upwards inside the box
+                // it was measured into and squeezed every gap built out of
+                // blank lines.
+                let family: String = line
+                    .segments
+                    .iter()
+                    .map(|sg| sg.style.font.clone())
+                    .find(|f| !f.is_empty())
+                    .unwrap_or_else(|| member_family.clone());
+                crate::player::font::system_line_height_px(&family, line_font_px)
+            };
+            crate::player::font::log_text_stride_once(
+                &line
+                    .segments
+                    .iter()
+                    .map(|sg| sg.style.font.clone())
+                    .find(|f| !f.is_empty())
+                    .unwrap_or_else(|| member_family.clone()),
+                line_font_px,
+                par_line_spacing,
+                fixed_line_space,
+                effective_line_height,
+            );
+            line_positions.push((y, effective_line_height));
+            // The line box is taller than the glyphs by the leading. Director
+            // leaves that leading ABOVE the text (GDI folds internal leading
+            // into the ascent), so the glyphs sit at the BOTTOM of the box.
+            // Drawing at the box top instead put every block high by exactly
+            // the leading: measured against the projector, 3 px on 14 px text
+            // and 8 px on the 36 px title, both 0.22 of the size.
+            // Under a member-level fixedLineSpace the box may be SMALLER than
+            // the font, and then the leading goes negative: the glyphs are
+            // anchored to the bottom of their box and spill out of the top.
+            // That is the other half of the fixed-height model above, and it
+            // is where the 4 px actually come from: a 36 px heading in a
+            // 20 px box, second in the member, has its top at 20 + (20 - 36)
+            // = 4. Clamping the leading at zero drew it from the box top
+            // instead, 16 px low, and once the box was unclamped, still at
+            // the box top, 16 px low again. Both halves are needed.
+            // Without a fixed height the natural box is always taller than
+            // the font, so the clamp is kept there and nothing else moves.
+            let line_leading = if fixed_line_space > 0 {
+                effective_line_height - line_font_px
+            } else {
+                (effective_line_height - line_font_px).max(0.0)
             };
 
             let mut x = x_start.max(0.0);
@@ -1104,7 +1252,7 @@ impl FontMemberHandlers {
                 ctx.set_font(&segment.style.font);
                 // Always render in WHITE on the black canvas for coverage measurement
                 ctx.set_fill_style_str("rgb(255,255,255)");
-                let _ = ctx.fill_text(&segment.text, x, y);
+                let _ = ctx.fill_text(&segment.text, x, y + line_leading);
 
                 // Record this segment's color region for per-run color lookup
                 // during the downscale. These rects are matched against OUTPUT
@@ -1119,7 +1267,7 @@ impl FontMemberHandlers {
                 // rect or miss entirely and fall back to `fallback_color`, so a
                 // single render comes out in two colors (dkbarrel's Help
                 // dialog, which is why it only broke once scrolling worked).
-                let canvas_y = y + start_y as f64;
+                let canvas_y = y + line_leading + start_y as f64;
                 seg_color_rects.push((
                     x,
                     x + segment.width,
@@ -1129,7 +1277,7 @@ impl FontMemberHandlers {
                 ));
 
                 if segment.style.underline {
-                    let underline_y = y + segment.style.size_px - 1.0;
+                    let underline_y = y + line_leading + segment.style.size_px - 1.0;
                     ctx.begin_path();
                     ctx.move_to(x, underline_y);
                     ctx.line_to(x + segment.width, underline_y);
@@ -1140,44 +1288,6 @@ impl FontMemberHandlers {
                 x += segment.width;
             }
 
-            let line_font_px = if line.max_font_px > 0.0 {
-                line.max_font_px
-            } else {
-                12.0
-            };
-            // Per-line stride priority (matches the PFR-styled multi-span
-            // path):
-            //  1. This line's `par_info.line_spacing` when non-zero. Director
-            //     stores per-paragraph stride here (RTF `\sl<twips>`) and
-            //     uses it in preference to the global `fixedLineSpace`. For
-            //     empty paragraphs (no glyphs on the line) we apply the
-            //     authored value verbatim; for content lines we clamp to
-            //     the line's font size to avoid clipping characters when a
-            //     small `\sl` value sits below the glyph cell — this matches
-            //     Director treating `\sl` as a minimum on content lines.
-            //     Junkbot V1 brick-info member 139 uses par_info[2] with
-            //     line_spacing=6 for the single empty line before "eyeBOT";
-            //     without this lookup the stride defaults to 12 and pushes
-            //     eyeBOT ~6 px below Director's layout.
-            //  2. Global `fixed_line_space` (member-level fixedLineSpace).
-            //  3. The line's own `max_font_px` (the natural glyph cell).
-            let par_line_spacing = this_par_idx
-                .and_then(|idx| par_infos.get(idx as usize))
-                .map(|pi| pi.line_spacing)
-                .filter(|&s| s > 0)
-                .map(|s| s as f64);
-            let effective_line_height = if let Some(par_ls) = par_line_spacing {
-                if line.segments.is_empty() {
-                    par_ls
-                } else {
-                    par_ls.max(line_font_px)
-                }
-            } else if fixed_line_space > 0 {
-                fixed_line_space as f64
-            } else {
-                line_font_px
-            };
-            line_positions.push((y, effective_line_height));
             // Per-line stride is line height + bottom_spacing only.
             // top_spacing is the initial offset before the first line (added
             // once when y was initialized) — adding it again per line stacks
@@ -1291,6 +1401,31 @@ impl FontMemberHandlers {
                             .iter()
                             .find(|&&(x0, x1, yt, yb, _)| fx >= x0 && fx < x1 && fy >= yt && fy < yb)
                             .map(|&(_, _, _, _, c)| c)
+                            .or_else(|| {
+                                // A glyph can reach outside its own cell: the
+                                // cell runs from the "top" baseline down by
+                                // the point size, but a ring or an accent sits
+                                // ABOVE that baseline (measured: 4 px for
+                                // Verdana at 24 px) and a descender reaches
+                                // below it. Those pixels matched no rect and
+                                // were painted with the fallback, which is
+                                // BLACK unless the sprite overrides it - so on
+                                // the measured movie's dark scenes the ring on every
+                                // "aa" vanished and the letter looked cut off.
+                                // Use the nearest run in the same column.
+                                seg_color_rects
+                                    .iter()
+                                    .filter(|&&(x0, x1, _, _, _)| fx >= x0 && fx < x1)
+                                    .map(|&(_, _, yt, yb, c)| {
+                                        let dist = if fy < yt { yt - fy } else { fy - yb };
+                                        (dist, c)
+                                    })
+                                    .filter(|(dist, _)| *dist <= max_glyph_overshoot)
+                                    .min_by(|a, b| {
+                                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                                    })
+                                    .map(|(_, c)| c)
+                            })
                             .unwrap_or(fallback_color)
                     };
                     bitmap.data[dest_idx] = fg_r;
