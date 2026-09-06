@@ -86,6 +86,9 @@ pub struct SpriteCamera {
 pub struct Sprite {
     pub number: usize,
     pub name: String,
+    /// The span's spriteListIdx as parsed from the score, kept only so a
+    /// probe can ask why a channel did or did not receive its behaviours.
+    pub score_sprite_list_idx: u32,
     pub puppet: bool,
     pub visible: bool,
     pub stretch: i32,
@@ -259,6 +262,7 @@ impl Sprite {
         Sprite {
             number,
             name: "".to_owned(),
+            score_sprite_list_idx: 0,
             puppet: false,
             visible: true,
             stretch: 0,

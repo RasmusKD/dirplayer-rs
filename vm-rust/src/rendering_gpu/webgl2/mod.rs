@@ -2201,15 +2201,15 @@ impl WebGL2Renderer {
                     }
                 }
                 CastMemberType::Text(text_member) => {
-                    // Text member: render the text using specified font
-                    let text = &text_member.text;
-                    if text.is_empty() {
-                        return; // No text to render
-                    }
                     // Host-suppressed member (see set_blanked_members): the
                     // page names members whose text must never be drawn.
                     if crate::player::blanked_members::is_blanked(&member.name) {
                         return;
+                    }
+                    // Text member: render the text using specified font
+                    let text = &text_member.text;
+                    if text.is_empty() {
+                        return; // No text to render
                     }
 
                     // Derive wrapping behavior from text member box type + explicit wordWrap flag.
@@ -2863,6 +2863,10 @@ impl WebGL2Renderer {
                     }
                 }
                 CastMemberType::Field(field_member) => {
+                    // Host-suppressed member (see set_blanked_members).
+                    if crate::player::blanked_members::is_blanked(&member.name) {
+                        return;
+                    }
                     // Field member: editable text field
                     let text = &field_member.text;
 
@@ -2878,10 +2882,6 @@ impl WebGL2Renderer {
                     // sprite width fit "Goombahs, Ghosts or Bowser --" on
                     // one line, while Director correctly wraps after
                     // "Ghosts or".
-                    // Host-suppressed member (see set_blanked_members).
-                    if crate::player::blanked_members::is_blanked(&member.name) {
-                        return;
-                    }
                     let wrap_width = if field_member.width > 0 {
                         (field_member.width as u32).min(width)
                     } else {
@@ -3515,6 +3515,13 @@ impl WebGL2Renderer {
                         sprite_rect.bottom + (filmloop_expand.3 as f32 * sy).round() as i32,
                     );
                 }
+
+                crate::player::filmloop_probe::set_stage_rect((
+                    sprite_rect.left,
+                    sprite_rect.top,
+                    sprite_rect.right,
+                    sprite_rect.bottom,
+                ));
 
                 TextureSource::FilmLoop {
                     initial_rect,

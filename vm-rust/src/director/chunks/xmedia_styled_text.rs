@@ -149,6 +149,8 @@ struct Section1Data {
     width: i32,
     height: i32,
     page_height: i32,
+    /// Header values [11..29], kept for the XMED_DUMP diagnostic test.
+    extra: Vec<i32>,
     bg_color: Option<(u8, u8, u8)>,
     /// HTML `<font size=N>` attribute (1..7) saved into the doc header by
     /// Director when a member.html setter assigns text without authoring
@@ -167,6 +169,7 @@ impl Default for Section1Data {
             width: 0,
             height: 0,
             page_height: 0,
+            extra: Vec::new(),
             bg_color: None,
             html_font_size_attr: 0,
         }
@@ -986,10 +989,14 @@ fn parse_section_1(data: &[u8]) -> Result<Section1Data, String> {
     // Values [11..29] - skip 19 intermediate values to reach bg_color at [30-32]
     for _ in 11..30 {
         if packer.remaining() >= 2 {
-            packer.unpack_num();
+            let v = packer.unpack_num();
+            section1.extra.push(v);
         }
     }
 
+    if std::env::var("XMED_DUMP").is_ok() {
+        println!("section1: doc_version={} width={} height={} page_height={} extra[11..29]={:?}", section1.doc_version, section1.width, section1.height, section1.page_height, section1.extra);
+    }
     // Values [30-32] - background color as 16-bit Director color components
     // High byte of each value is the actual 8-bit color (e.g. 0xCC00 -> 0xCC)
     if packer.remaining() >= 2 {
@@ -2185,4 +2192,61 @@ fn xmed_style_to_html_style(xmed_style: &XmedStyle) -> HtmlStyle {
 /// Pass through directly — the raw XMED size is the Director point size.
 fn map_xmed_font_size(raw_size: i32) -> i32 {
     raw_size.max(0)
+}
+
+
+
+
+#[cfg(test)]
+mod dump_tests {
+    use super::*;
+
+    /// Diagnostic: XMED_DUMP=a.xmed,b.xmed cargo test xmed_dump -- --nocapture
+    #[test]
+    fn xmed_dump() {
+        let Ok(list) = std::env::var("XMED_DUMP") else { return };
+        let mut paths: Vec<String> = Vec::new();
+        for item in list.split(',') {
+            if std::path::Path::new(item).is_dir() {
+                let mut v: Vec<String> = std::fs::read_dir(item).expect("dir").flatten()
+                    .map(|e| e.path().to_string_lossy().to_string())
+                    .filter(|p| p.ends_with(".xmed")).collect();
+                v.sort();
+                paths.extend(v);
+            } else {
+                paths.push(item.to_string());
+            }
+        }
+        for path in &paths {
+            let data = std::fs::read(path).expect("read xmed");
+            let x = match parse_xmed(&data) { Ok(x) => x, Err(e) => { println!("== {}
+PARSE ERROR {}", path, e); continue; } };
+            let s1 = {
+                // re-split to reach the header's raw values
+                let mut sections: std::collections::HashMap<u16, Vec<u8>> = std::collections::HashMap::new();
+                let mut off = 0usize;
+                while off + 4 <= data.len() {
+                    let key = u16::from_le_bytes([data[off], data[off + 1]]);
+                    let _ = key;
+                    break;
+                }
+                let _ = &mut sections; let _ = off;
+                String::new()
+            };
+            let _ = s1;
+            println!("== {}", path);
+            println!("text={:?}", x.text.chars().take(40).collect::<String>());
+            println!("width={} height={} page_height={} line_height={} line_count={} fixed_line_space={}",
+                x.width, x.height, x.page_height, x.line_height, x.line_count, x.fixed_line_space);
+            println!("line_spacing={} top_spacing={} bottom_spacing={} left={} right={} first={}",
+                x.line_spacing, x.top_spacing, x.bottom_spacing, x.left_indent, x.right_indent, x.first_indent);
+            println!("default_font={:?} size={:?}", x.default_font_name, x.default_font_size);
+            for (i, p) in x.par_infos.iter().enumerate() {
+                println!("par[{}] line_spacing={} line_height={} top={} bottom={} just={}", i, p.line_spacing, p.line_height, p.top_spacing, p.bottom_spacing, p.justification);
+            }
+            for (i, sp) in x.styled_spans.iter().take(3).enumerate() {
+                println!("span[{}] {:?}", i, sp);
+            }
+        }
+    }
 }

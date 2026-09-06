@@ -140,6 +140,8 @@ pub struct Score {
     pub keyframes_cache: Arc<HashMap<u16, ChannelKeyframes>>,
     /// Sprite detail behaviors indexed by spriteListIdx (D6+)
     pub sprite_details: HashMap<u32, crate::director::chunks::score::SpriteDetailInfo>,
+    /// Raw VWSC entry lengths, copied straight from the chunk for diagnosis.
+    pub entry_lengths: Vec<u32>,
     /// User-defined tile patterns (VWTL). Shape `pattern` 57-64 maps to index
     /// 0-7; a non-zero `member` overrides the built-in tile with a region of
     /// that bitmap cast member (e.g. employee's blue/white checker background).
@@ -278,6 +280,7 @@ impl Score {
             sound_channel_triggered: HashMap::new(),
             keyframes_cache: Arc::new(HashMap::new()),
             sprite_details: HashMap::new(),
+            entry_lengths: Vec::new(),
             custom_tiles: Vec::new(),
             last_sound_clear_frame: None,
             needs_per_frame_updates: false,
@@ -959,6 +962,7 @@ impl Score {
             if is_sprite {
                 // Log spriteListIdx values for D6+ behavior debugging
                 let sprite_list_idx = data.sprite_list_idx();
+                sprite.score_sprite_list_idx = sprite_list_idx;
                 if sprite_list_idx != 0 {
                     debug!(
                         "Sprite channel {} has spriteListIdx: {}",
@@ -3176,6 +3180,7 @@ impl Score {
 
         // Copy sprite detail behaviors (D6+)
         self.sprite_details = score_chunk.sprite_details.clone();
+        self.entry_lengths = score_chunk.entry_lengths.clone();
 
         // Compute frame count for auto-looping (applies to all movie versions).
         // Always run this even if generate_sprite_spans_from_channel_data already set
@@ -4922,6 +4927,7 @@ pub fn sprite_set_prop(sprite_id: i16, prop_name: Symbol, value: Datum) -> Resul
                             if let Some(player) = PLAYER_OPT.as_mut() {
                                 if let Some(member) = player.movie.cast_manager.find_mut_member_by_ref(r) {
                                     if let CastMemberType::FilmLoop(film_loop) = &mut member.member_type {
+                                        crate::player::filmloop_probe::note_reset();
                                         film_loop.current_frame = 1;
                                         film_loop.score.sound_channel_triggered.clear();
                                         film_loop.score.last_sound_clear_frame = None;

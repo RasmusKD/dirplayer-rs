@@ -1328,6 +1328,10 @@ pub struct ScoreChunk {
     /// Sprite detail offsets for D6+ behavior attachment
     /// Key is sprite_list_idx, value is the sprite detail info with behaviors
     pub sprite_details: std::collections::HashMap<u32, SpriteDetailInfo>,
+    /// Length of every raw VWSC entry, kept for diagnosis: a channel whose
+    /// spriteListIdx has no behaviours is either a missing entry or one the
+    /// parser rejected, and only the raw lengths tell those apart.
+    pub entry_lengths: Vec<u32>,
 }
 
 impl ScoreChunk {
@@ -1431,6 +1435,7 @@ impl ScoreChunk {
 
             let frame_intervals = Self::analyze_behavior_attachment_entries(&entries, dir_version)?;
             let sprite_details = Self::parse_sprite_details_from_entries(&entries);
+            let entry_lengths: Vec<u32> = entries.iter().map(|e| e.len() as u32).collect();
 
             Ok(ScoreChunk {
                 header: ScoreChunkHeader::default(),
@@ -1438,6 +1443,7 @@ impl ScoreChunk {
                 frame_intervals,
                 frame_data,
                 sprite_details,
+                entry_lengths,
             })
         } else if dir_version >= 400 {
             // D4/D5 format: frame data directly at position 0
@@ -1454,6 +1460,7 @@ impl ScoreChunk {
                 frame_intervals: vec![],
                 frame_data,
                 sprite_details: std::collections::HashMap::new(),
+                entry_lengths: Vec::new(),
             })
         } else {
             Err(format!("Unsupported Director version for VWSC: {}", dir_version))

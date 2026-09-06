@@ -1087,6 +1087,25 @@ fn render_filmloop_from_channel_data(
     let mut sorted_data = channel_data;
     sorted_data.sort_by_key(|(_, channel_idx, _)| *channel_idx);
 
+    // Diagnostic trace of what this frame actually resolves to, readable from
+    // JS via dirplayer_getFilmLoopLayout. See player::filmloop_probe. Off by
+    // default: this runs for every film loop on every frame, and building it
+    // unconditionally cost a format! per child plus a whole-string clone.
+    let trace_on = crate::player::filmloop_probe::tracing_enabled();
+    let mut layout_trace = if trace_on {
+        format!(
+            "f{}/{} tex({},{},{},{}) dest({},{},{},{}) bounds({}) ",
+            current_frame, total_frames,
+            initial_rect.left, initial_rect.top, initial_rect.right, initial_rect.bottom,
+            dest_rect.left, dest_rect.top, dest_rect.right, dest_rect.bottom,
+            match compute_filmloop_animated_bounds(player, member_ref) {
+                Some(b) => format!("{},{},{},{}", b.left, b.top, b.right, b.bottom),
+                None => "none".to_string(),
+            },
+        )
+    } else {
+        String::new()
+    };
 
     for (_frame_idx, channel_idx, data) in sorted_data {
         let channel_num = get_channel_number_from_index(channel_idx as u32);
@@ -1245,11 +1264,6 @@ fn render_filmloop_from_channel_data(
         // filmloop shows full bitmap content and bitmap dims are more accurate.
         // Otherwise the filmloop is a viewport/crop and sprite dims represent
         // the intended display size within that viewport.
-        // Choose between channel data dims (sprite dims) and actual bitmap dims.
-        // When the filmloop's info_rect matches the bitmap bounding box, the
-        // filmloop shows full bitmap content and bitmap dims are more accurate.
-        // Otherwise the filmloop is a viewport/crop and sprite dims represent
-        // the intended display size within that viewport.
         //
         // The preference is about BITMAPS, as its name says. For a nested film
         // loop, `member_width/height` is not a bitmap size at all - it is that
@@ -1304,6 +1318,27 @@ fn render_filmloop_from_channel_data(
             rel_y + rel_h,
         );
 
+        if trace_on {
+            layout_trace.push_str(&format!(
+                "[ch{} m{}{} pos({},{}) data({},{}) reg({},{}) mem({}x{}) use({}x{}) rect({},{},{}x{})]",
+                channel_num, sprite_member_ref.cast_member,
+                match &member.member_type {
+                    CastMemberType::FilmLoop(inner) => {
+                        let b = filmloop_base_rect(player, &sprite_member_ref);
+                        format!(
+                            "(loop base {},{},{},{} reg {},{})",
+                            b.left, b.top, b.right, b.bottom,
+                            inner.info.reg_point.0, inner.info.reg_point.1,
+                        )
+                    }
+                    CastMemberType::Bitmap(_) => String::new(),
+                    other => format!("({:?})", other.member_type_id()),
+                },
+                pos_x, pos_y, data.pos_x, data.pos_y, scaled_reg_x, scaled_reg_y,
+                member_width, member_height, use_width, use_height,
+                sprite_rect.left, sprite_rect.top, rel_w, rel_h,
+            ));
+        }
 
         debug!(
             "  channel {}: member {}:{} type {:?} orig ({}, {}) interp ({}, {}) data_size {}x{} use_size {}x{} reg ({}, {}) sprite_left {} initial_left {} -> rect ({}, {}, {}, {})",
@@ -1823,6 +1858,7 @@ fn render_filmloop_from_channel_data(
                 // its OWN authored ink (matte/bgTrans/mask/add‑pin). The
                 // child_ink applies only at the composite step below, on the
                 // already-rendered inner bitmap.
+                crate::player::filmloop_probe::push_depth();
                 render_score_to_bitmap_with_offset(
                     player,
                     &ScoreRef::FilmLoop(sprite_member_ref.clone()),
@@ -1836,6 +1872,7 @@ fn render_filmloop_from_channel_data(
                         bg_color: child_bg_color.clone(),
                     }),
                 );
+                crate::player::filmloop_probe::pop_depth();
 
                 let blend = crate::player::score::convert_raw_blend(data.blend, data.sprite_flags, player.movie.dir_version);
 
@@ -1884,6 +1921,20 @@ fn render_filmloop_from_channel_data(
                     channel_num, member.member_type.member_type_id()
                 );
             }
+        }
+    }
+
+    if trace_on {
+        let probe_depth = crate::player::filmloop_probe::depth();
+        crate::player::filmloop_probe::set_trace(
+            probe_depth,
+            member_ref.cast_member,
+            layout_trace.clone(),
+        );
+        if probe_depth == 0 {
+            crate::player::filmloop_probe::set_layout(layout_trace);
+        } else {
+            crate::player::filmloop_probe::set_inner_layout(layout_trace);
         }
     }
 }
@@ -2214,7 +2265,7 @@ pub fn render_score_to_bitmap_with_offset(
                     blend: sprite.effective_blend(),
                     ink: sprite.ink as u32,
                     color: sprite.color.clone(),
-                    bg_color: sprite.bg_color.clone(),
+                    bg_color: bg_color.clone(),
                     bg_color_explicit: false,
                     fore_color_explicit: false,
                     mask_image: None,

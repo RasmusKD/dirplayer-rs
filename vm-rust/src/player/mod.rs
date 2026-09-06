@@ -40,6 +40,9 @@ pub mod net_manager;
 pub mod net_task;
 pub mod profiling;
 pub mod scope;
+pub mod blanked_members;
+pub mod filmloop_probe;
+pub mod host_text;
 pub mod score;
 pub mod script;
 pub mod script_ref;
@@ -265,15 +268,15 @@ pub struct DirPlayer {
     pub nested_movie_images: HashMap<CastMemberRef, BitmapRef>,
     pub is_playing: bool,
     pub is_script_paused: bool,
-    pub next_frame: Option<u32>,
-    pub queue_tx: Sender<PlayerVMExecutionItem>,
-    pub globals: FxHashMap<Symbol, DatumRef>,
     /// Set from the host page (`dirplayer_setPaused`). The frame loop stays
     /// alive but stops advancing the movie, so the playhead, timers and sound
     /// are exactly where the player left them. Used for a real pause overlay:
     /// a browser throttles a hidden tab's timers anyway, and the movie then
     /// drifts on silently instead of waiting.
     pub is_user_paused: bool,
+    pub next_frame: Option<u32>,
+    pub queue_tx: Sender<PlayerVMExecutionItem>,
+    pub globals: FxHashMap<Symbol, DatumRef>,
     pub scopes: Vec<Scope>,
     pub bytecode_handler_manager: StaticBytecodeHandlerManager,
     pub breakpoint_manager: BreakpointManager,
@@ -751,10 +754,10 @@ impl DirPlayer {
             },
             is_playing: false,
             is_script_paused: false,
+            is_user_paused: false,
             next_frame: None,
             queue_tx: tx,
             globals: FxHashMap::default(),
-            is_user_paused: false,
             scopes: Vec::with_capacity(MAX_STACK_SIZE),
             bytecode_handler_manager: StaticBytecodeHandlerManager {},
             breakpoint_manager: BreakpointManager::new(),
@@ -1173,6 +1176,10 @@ impl DirPlayer {
 
         let base_url = get_base_url(&task.resolved_url).to_string();
         let file_name_owned = file_name.to_string();
+        // Phase timings for the loading screen. Measured on this game: the
+        // 35 MB main.dcr FETCHES in 86 ms but the whole transition takes ~10 s,
+        // so the cost is here, not on the wire.
+        let t_fetched = crate::player::profiling::now_ms();
         let movie_file = read_director_file_bytes(
             &data_bytes,
             &file_name,
@@ -1182,22 +1189,8 @@ impl DirPlayer {
         // Retain the raw bytes so a `play movie <current>` restart can re-parse and
         // rebuild the cast (the net loader often can't re-fetch by name once loaded).
         self.movie_reload_data = Some((data_bytes, file_name_owned, base_url));
-        self.load_movie_from_dir(movie_file).await;
-        // Phase timings for the loading screen. Measured on this game: the
-        // 35 MB main.dcr FETCHES in 86 ms but the whole transition takes ~10 s,
-        // so the cost is here, not on the wire.
-        let t_fetched = crate::player::profiling::now_ms();
-        Ok(())
-    }
-
-    /// Instantiate a full nested `DirPlayer` for a Linked `#movie` member whose
-    /// linked bytes are loaded, register it in `NESTED_PLAYERS`, and start it
-    /// (load + play + its own command loop) on its own active-player id. The sub
-    /// runs the entire engine against itself — its own scripts/score/cast — via
-    /// the active-player indirection; the loader keeps running independently.
-    /// Synchronous: the async load+play happens in a spawned task bound to the
         let t_parsed = crate::player::profiling::now_ms();
-    /// sub's id (a manual `ACTIVE_PLAYER_ID` set can't span an await here, since
+        self.load_movie_from_dir(movie_file).await;
         let t_loaded = crate::player::profiling::now_ms();
         // Straight to the console for the same reason as the cast+score line
         // below: the browser logger is initialised at Level::Error, so `warn!`
@@ -1227,6 +1220,16 @@ impl DirPlayer {
             t_loaded - t_parsed,
             t_loaded - t_fetched,
         );
+        Ok(())
+    }
+
+    /// Instantiate a full nested `DirPlayer` for a Linked `#movie` member whose
+    /// linked bytes are loaded, register it in `NESTED_PLAYERS`, and start it
+    /// (load + play + its own command loop) on its own active-player id. The sub
+    /// runs the entire engine against itself — its own scripts/score/cast — via
+    /// the active-player indirection; the loader keeps running independently.
+    /// Synchronous: the async load+play happens in a spawned task bound to the
+    /// sub's id (a manual `ACTIVE_PLAYER_ID` set can't span an await here, since
     /// the enclosing task's `WithActivePlayer` wrapper would restore it).
     pub fn spawn_nested_player(&self, member_ref: CastMemberRef) {
         if nested_player_id(&member_ref).is_some() {
@@ -1472,6 +1475,11 @@ impl DirPlayer {
         // task scene's craftsman and plank piles.
         crate::player::gif::forget_all(self);
         self.reset_cursor_for_new_movie();
+        // Where the loading screen's time actually goes. Measured on this game:
+        // the 35 MB main.dcr FETCHES in 86 ms while the whole first load takes
+        // ~10 s, so the cost is in here, not on the wire.
+        let t_load_start = crate::player::profiling::now_ms();
+        let loaded_name = dir.file_name.to_string();
         self.movie
             .load_from_file(
                 dir,
@@ -1480,21 +1488,6 @@ impl DirPlayer {
                 &mut self.dir_cache,
             )
             .await;
-
-        // Apply fake movie path override if set (moviePath/movieName use
-        // Where the loading screen's time actually goes. Measured on this game:
-        // the 35 MB main.dcr FETCHES in 86 ms while the whole first load takes
-        // ~10 s, so the cost is in here, not on the wire.
-        let t_load_start = crate::player::profiling::now_ms();
-        let loaded_name = dir.file_name.to_string();
-        // this, but net_manager.base_path stays real for actual file
-        // fetching).
-        //
-        // Three sources, listed by precedence:
-        //   1. `movie_path_label` (set_movie_path_label JS API) —
-        //      label-only, no URL rewrite.
-        //   2. external_params["_moviePath"] — same semantics as #1; just
-        //      a more declarative way to set it (drop a key in the
         // Straight to the console: the `warn!` macro's output never reached it
         // from here, and this number is the whole point of the measurement.
         #[cfg(target_arch = "wasm32")]
@@ -1503,6 +1496,16 @@ impl DirPlayer {
             loaded_name,
             crate::player::profiling::now_ms() - t_load_start,
         )));
+
+        // Apply fake movie path override if set (moviePath/movieName use
+        // this, but net_manager.base_path stays real for actual file
+        // fetching).
+        //
+        // Three sources, listed by precedence:
+        //   1. `movie_path_label` (set_movie_path_label JS API) —
+        //      label-only, no URL rewrite.
+        //   2. external_params["_moviePath"] — same semantics as #1; just
+        //      a more declarative way to set it (drop a key in the
         //      externalParams the host passes to dirplayer).
         //   3. `movie_path_override` (set_movie_path_override JS API) —
         //      rewrite-mode: registers `net_manager.override_base_path`
@@ -1957,9 +1960,6 @@ impl DirPlayer {
         }
     }
 
-    /// True while the playhead is held for a score/puppet transition. Normally
-    /// the renderer clears `score_transition_active` the moment its animation
-    /// completes (precise sync); the wall-clock deadline is only a failsafe so a
     /// May the playhead move and frame scripts run this tick?
     ///
     /// Two independent reasons say no. `is_script_paused` is the movie's own
@@ -2013,6 +2013,9 @@ impl DirPlayer {
         }
     }
 
+    /// True while the playhead is held for a score/puppet transition. Normally
+    /// the renderer clears `score_transition_active` the moment its animation
+    /// completes (precise sync); the wall-clock deadline is only a failsafe so a
     /// missed completion signal can never permanently freeze the movie.
     pub fn transition_hold_active(&mut self) -> bool {
         if !self.score_transition_active {
@@ -4108,6 +4111,7 @@ impl DirPlayer {
             })
             .collect();
 
+        crate::player::filmloop_probe::note_tick(active_filmloops.len() as u32);
 
         // Process each filmloop
         for (member_ref, old_frame, new_frame) in active_filmloops {
@@ -4140,6 +4144,12 @@ impl DirPlayer {
                 }
             }
             
+            crate::player::filmloop_probe::note_advance(
+                member_ref.cast_lib,
+                member_ref.cast_member,
+                old_frame,
+                new_frame,
+            );
             changed_filmloops.push((member_ref, old_frame, new_frame));
         }
 
@@ -4157,16 +4167,12 @@ impl DirPlayer {
         for member_ref in active_filmloop_refs {
             if let Some(member) = self.movie.cast_manager.find_mut_member_by_ref(&member_ref) {
                 if let CastMemberType::FilmLoop(film_loop) = &mut member.member_type {
-                            // Use the length the RENDERER uses. The score's own
-                            // frame_count is only filled in by a D5 branch that a
-                            // D8.5 film loop never takes, so it stayed 1 and every
-                            // loop froze on its first frame while the renderer was
-                            // prepared to draw all 62 (or 190) of them.
-                            let frame_count = film_loop
-                                .cached_total_frames
-                                .or(film_loop.score.frame_count)
-                                .unwrap_or(1)
-                                .max(1);
+                    // Same length source as update_filmloop_frames and the renderer.
+                    let frame_count = film_loop
+                        .cached_total_frames
+                        .or(film_loop.score.frame_count)
+                        .unwrap_or(1)
+                        .max(1);
 
                     let old_frame = film_loop.current_frame;
                     film_loop.current_frame += 1;
@@ -6285,8 +6291,8 @@ pub async fn run_single_frame() -> (bool, bool) {
     let mut new_frame = 0;
     reserve_player_mut(|player| {
         is_playing = player.is_playing;
-        may_advance = player.should_advance();
         is_script_paused = player.is_script_paused;
+        may_advance = player.should_advance();
         if !player.is_playing {
             return;
         }
@@ -7105,6 +7111,7 @@ pub async fn run_frame_loop() {
         // Exit if the player was reset (e.g. between tests)
         if unsafe { PLAYER_GENERATION } != generation {
             return;
+        }
         // Paused by the host. Hold here without running a frame: the loop is
         // still alive, so resuming is instant and nothing about the movie's
         // state has moved. Deliberately BEFORE the transition and init checks
@@ -7112,7 +7119,6 @@ pub async fn run_frame_loop() {
         if reserve_player_ref(|player| player.is_user_paused) {
             let _ = timeout(Duration::from_millis(80), future::pending::<()>()).await;
             continue;
-        }
         }
         // Restart (`play movie <the current movie>`). Done HERE — between frames,
         // no active bytecode — so it's safe to rebuild the cast. Re-parses the

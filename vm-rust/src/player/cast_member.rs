@@ -6191,6 +6191,7 @@ impl CastMember {
                         frame_intervals: vec![],
                         frame_data: ScoreFrameData::default(),
                         sprite_details: std::collections::HashMap::new(),
+                        entry_lengths: Vec::new(),
                     };
                     CastMemberType::FilmLoop(FilmLoopMember {
                         info: film_loop_info.clone(),
