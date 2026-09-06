@@ -11,7 +11,7 @@ import {
 import { createFlashInstance, destroyFlashInstance, destroyAllFlashInstances, initFlashBridge } from "../services/flashPlayerManager";
 import store from "../store";
 import { breakpointListChanged, castLibNameChanged, castListChanged, castMemberChanged, castMemberListChanged, channelChanged, channelDisplayNameChanged, channelDisplayNamesChanged, datumSnapshot, debugContentAdded, debugMessageAdded, debugMessagesCleared, frameChanged, globalsChanged, movieLoaded, movieLoadFailed, onScriptError, removeTimeoutHandle, scopeListChanged, scoreChanged, scriptErrorCleared, scriptInstanceSnapshot, setTimeoutHandle } from "../store/vmSlice";
-import { OnMovieLoadedCallbackData, trigger_timeout, exportW3dObj, exportW3dRaw, listW3dMembers, get_breakpoints } from 'vm-rust'
+import { OnMovieLoadedCallbackData, trigger_timeout, exportW3dObj, exportW3dRaw, listW3dMembers, get_breakpoints, set_lingo_global, get_lingo_global, get_sprite_info, set_blanked_members, get_film_loop_dump, get_film_loop_layout, get_film_loop_inner_layout, get_film_loop_traces, set_text_replacements, set_film_loop_trace, set_paused, is_paused, eval_command, player_print_member_bitmap_hex, get_score_details } from 'vm-rust'
 import { DatumRef, IVMScope, JsBridgeDatum, MemberSnapshot, ScoreSnapshot, ScoreSpriteSnapshot } from ".";
 import { onMemberSelected } from "../store/uiSlice";
 import { isUIShown } from "../utils/debug";

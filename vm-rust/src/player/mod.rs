@@ -268,6 +268,12 @@ pub struct DirPlayer {
     pub next_frame: Option<u32>,
     pub queue_tx: Sender<PlayerVMExecutionItem>,
     pub globals: FxHashMap<Symbol, DatumRef>,
+    /// Set from the host page (`dirplayer_setPaused`). The frame loop stays
+    /// alive but stops advancing the movie, so the playhead, timers and sound
+    /// are exactly where the player left them. Used for a real pause overlay:
+    /// a browser throttles a hidden tab's timers anyway, and the movie then
+    /// drifts on silently instead of waiting.
+    pub is_user_paused: bool,
     pub scopes: Vec<Scope>,
     pub bytecode_handler_manager: StaticBytecodeHandlerManager,
     pub breakpoint_manager: BreakpointManager,
@@ -748,6 +754,7 @@ impl DirPlayer {
             next_frame: None,
             queue_tx: tx,
             globals: FxHashMap::default(),
+            is_user_paused: false,
             scopes: Vec::with_capacity(MAX_STACK_SIZE),
             bytecode_handler_manager: StaticBytecodeHandlerManager {},
             breakpoint_manager: BreakpointManager::new(),
@@ -1953,6 +1960,59 @@ impl DirPlayer {
     /// True while the playhead is held for a score/puppet transition. Normally
     /// the renderer clears `score_transition_active` the moment its animation
     /// completes (precise sync); the wall-clock deadline is only a failsafe so a
+    /// May the playhead move and frame scripts run this tick?
+    ///
+    /// Two independent reasons say no. `is_script_paused` is the movie's own
+    /// `pause`; `is_user_paused` is the host page holding it while the player
+    /// is away. Ask this rather than either flag, so a third reason has one
+    /// place to be added instead of a search for every site that guessed.
+    pub fn should_advance(&self) -> bool {
+        !self.is_script_paused && !self.is_user_paused
+    }
+
+    /// May input and timers reach the movie this tick?
+    ///
+    /// Only the HOST pause blocks them, and the difference is not cosmetic.
+    /// Director keeps dispatching mouse and key events through a Lingo
+    /// `pause` — a movie sitting on a paused frame commonly has an
+    /// `on mouseUp` as its only way forward — so folding the two flags into
+    /// one "paused" would strand such a movie for good. A host pause means
+    /// the person walked away, and then nothing the movie can observe may
+    /// happen at all.
+    pub fn accepts_input(&self) -> bool {
+        !self.is_user_paused
+    }
+
+    /// Check the one thing the movie-change flags already claim about
+    /// themselves, and only that one.
+    ///
+    /// `score_transition_active` (a visual effect is animating) and
+    /// `is_in_transition` (a movie swap is loading) are documented at their
+    /// declarations as fields that "never collide". That is an invariant, and
+    /// until now it was only a sentence. Both set at once means a transition
+    /// is animating over a movie that is being replaced underneath it, and
+    /// the renderer's completion signal would then clear a hold that belongs
+    /// to the swap.
+    ///
+    /// The other combinations are NOT asserted, deliberately. `pending_restart`
+    /// and `pending_movie_init` are set by `play movie` and by a mid-handler
+    /// `go(frame, movie)`, and this game uses neither (measured: 0 of 846
+    /// scripts), so nothing here exercises them and any rule invented for them
+    /// would be a guess enforced on other people's movies.
+    ///
+    /// Warns rather than panics: a false alarm must not take down a game that
+    /// was working, and the point is to be told, not to be right.
+    pub fn check_transition_invariant(&self, site: &str) {
+        if self.score_transition_active && self.is_in_transition {
+            warn!(
+                "invariant broken at {}: score_transition_active and is_in_transition are both set. \
+                 A visual transition is animating over a movie that is being swapped out; whichever \
+                 clears first will release the other's hold.",
+                site
+            );
+        }
+    }
+
     /// missed completion signal can never permanently freeze the movie.
     pub fn transition_hold_active(&mut self) -> bool {
         if !self.score_transition_active {
@@ -6135,8 +6195,14 @@ pub async fn fire_pending_timeouts() {
 }
 
 pub async fn run_single_frame() -> (bool, bool) {
-    let (mut is_playing, mut is_script_paused) = reserve_player_ref(|player| {
-        (player.is_playing, player.is_script_paused)
+    // `is_script_paused` is what this returns, because that is what callers
+    // ask about and what `the pauseState` reports. `may_advance` is what the
+    // gates below use, because a host pause holds the playhead just as hard
+    // and the browser loop is not the only caller: the native test harness
+    // drives this directly, with no outer loop to check the host pause for it.
+    let (mut is_playing, mut is_script_paused, mut may_advance) = reserve_player_ref(|player| {
+        player.check_transition_invariant("run_single_frame");
+        (player.is_playing, player.is_script_paused, player.should_advance())
     });
     if !is_playing {
         return (false, is_script_paused);
@@ -6192,7 +6258,7 @@ pub async fn run_single_frame() -> (bool, bool) {
     stream_status::dispatch_pending_stream_status().await;
 
     // --- Phase 1: Execute frame scripts ---
-    if !is_script_paused {
+    if may_advance {
         player_wait_available().await;
 
         let skip_frame = reserve_player_ref(|player| player.command_handler_yielding || player.in_mouse_command);
@@ -6219,12 +6285,13 @@ pub async fn run_single_frame() -> (bool, bool) {
     let mut new_frame = 0;
     reserve_player_mut(|player| {
         is_playing = player.is_playing;
+        may_advance = player.should_advance();
         is_script_paused = player.is_script_paused;
         if !player.is_playing {
             return;
         }
         prev_frame = player.movie.current_frame;
-        if !player.is_script_paused {
+        if may_advance {
             new_frame = player.get_next_frame();
         } else {
             new_frame = prev_frame;
@@ -6249,7 +6316,7 @@ pub async fn run_single_frame() -> (bool, bool) {
         }
     }
 
-    if is_script_paused {
+    if !may_advance {
         return (is_playing, is_script_paused);
     }
 
@@ -7038,6 +7105,14 @@ pub async fn run_frame_loop() {
         // Exit if the player was reset (e.g. between tests)
         if unsafe { PLAYER_GENERATION } != generation {
             return;
+        // Paused by the host. Hold here without running a frame: the loop is
+        // still alive, so resuming is instant and nothing about the movie's
+        // state has moved. Deliberately BEFORE the transition and init checks
+        // so a pause cannot land in the middle of a movie change.
+        if reserve_player_ref(|player| player.is_user_paused) {
+            let _ = timeout(Duration::from_millis(80), future::pending::<()>()).await;
+            continue;
+        }
         }
         // Restart (`play movie <the current movie>`). Done HERE — between frames,
         // no active bytecode — so it's safe to rebuild the cast. Re-parses the

@@ -369,6 +369,27 @@ pub fn play() {
     });
 }
 
+/// Pause or resume the movie without tearing anything down.
+///
+/// `stop()` is not a pause: it ends the frame loop, and `play()` re-runs the
+/// whole movie init sequence. This holds the loop between frames instead, so
+/// the playhead, timers and sound stay exactly where they were and resuming is
+/// instant. The host page uses it for the pause overlay, because a browser
+/// throttles a hidden tab's timers anyway and the movie would otherwise drift
+/// on unseen.
+#[wasm_bindgen]
+pub fn set_paused(paused: bool) {
+    reserve_player_mut(|player| {
+        player.is_user_paused = paused;
+    });
+}
+
+/// Whether the movie is held by `set_paused`.
+#[wasm_bindgen]
+pub fn is_paused() -> bool {
+    crate::player::reserve_player_ref(|player| player.is_user_paused)
+}
+
 #[wasm_bindgen]
 pub fn stop() {
     reserve_player_mut(|player| {

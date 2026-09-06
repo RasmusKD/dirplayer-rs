@@ -103,6 +103,36 @@ pub enum PlayerVMCommand {
     },
 }
 
+impl PlayerVMCommand {
+    /// True for commands the movie would OBSERVE: input from the person at
+    /// the keyboard, and timers that fire its handlers. These arrive on the
+    /// queue from JS listeners, entirely outside the frame loop, so the
+    /// loop's own pause hold does not cover them.
+    ///
+    /// Setup commands are deliberately not in this list. Loading a movie,
+    /// setting the stage size or the base path is the host wiring the player
+    /// up, not the movie running, and blocking those on a pause would mean a
+    /// player paused before load could never start.
+    ///
+    /// Measured before this existed (probe/pausedinput.mjs): with the game
+    /// paused and the overlay up, pressing Escape opened the game's own menu
+    /// behind the overlay and redrew the stage.
+    pub fn blocked_by_host_pause(&self) -> bool {
+        matches!(
+            self,
+            Self::MouseDown(..)
+                | Self::MouseUp(..)
+                | Self::MouseMove(..)
+                | Self::RightMouseDown(..)
+                | Self::RightMouseUp(..)
+                | Self::KeyDown(..)
+                | Self::KeyUp(..)
+                | Self::TimeoutTriggered(..)
+        )
+    }
+}
+
+
 pub fn _format_player_cmd(command: &PlayerVMCommand) -> String {
     match command {
         PlayerVMCommand::LoadMovieFromFile(path, autoplay) => format!("LoadMovieFromFile({}, {})", path, autoplay),
@@ -367,6 +397,15 @@ pub async fn run_player_command(command: PlayerVMCommand) -> Result<DatumRef, Sc
             crate::player::ScriptErrorCode::Abort,
             "Command cancelled: player generation changed (test reset)".to_string(),
         ));
+    }
+    // One guard, in the one place every command passes through. Guarding the
+    // individual handlers instead is how the gap this closes was created: the
+    // frame loop learned about the host pause and the seven command handlers
+    // did not, because nobody was looking at them that day.
+    if command.blocked_by_host_pause()
+        && reserve_player_ref(|player| !player.accepts_input())
+    {
+        return Ok(DatumRef::Void);
     }
     match command {
         PlayerVMCommand::SetExternalParams(params) => {
