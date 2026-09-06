@@ -75,6 +75,13 @@ function loadRuffle(): Promise<void> {
 
   // Check for a custom ruffle URL on the script tag: data-ruffle-url="..."
   const customUrl = polyfillScript?.getAttribute('data-ruffle-url');
+  // data-ruffle-url="none" opts out entirely. A host that knows its movies
+  // carry no Flash members then costs nothing for Flash support: no script
+  // fetch, no 404 and no warning if the folder is absent, and the ruffle/
+  // directory (15 MB) does not have to be deployed at all.
+  if (customUrl === 'none') {
+    return Promise.resolve();
+  }
   const ruffleUrl = customUrl || (getPolyfillBaseUrl() + 'ruffle/dirplayer_ruffle.js');
 
   // Set up dirplayer_RufflePlayer config before the script loads

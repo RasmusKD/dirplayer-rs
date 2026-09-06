@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import svgr from "vite-plugin-svgr";
 import embedResources from "./polyfill/vite-plugin-embed-resources.js";
+import stripInlineWasm from "./polyfill/vite-plugin-strip-inline-wasm.js";
 import path from "path";
 import { readFileSync } from "fs";
 
@@ -93,5 +94,7 @@ export default defineConfig({
       fontPath: "public/charmap-system.png",
     }),
     injectCss(),
+    // Must run after everything else: it rewrites the emitted chunk.
+    stripInlineWasm(),
   ],
 });
