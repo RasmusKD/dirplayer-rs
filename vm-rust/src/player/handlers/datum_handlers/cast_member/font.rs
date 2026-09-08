@@ -1213,6 +1213,24 @@ impl FontMemberHandlers {
             } else {
                 (effective_line_height - line_font_px).max(0.0)
             };
+            // A font that spills out of its fixedLineSpace box hangs from the
+            // box bottom, so its top is a whole number, and on the 2x canvas
+            // Chromium then lands the glyph half a pixel below where a 1x
+            // raster puts it (see `font::glyph_top_bearing`): measured on the
+            // projector, 0.6 px low for a 36 px heading in a 20 px box, while
+            // lines inside their box landed right. Snap only the spilling
+            // lines so the glyph top sits on a whole pixel.
+            let line_top = {
+                let top = y + line_leading;
+                let spills = fixed_line_space > 0 && line_font_px > effective_line_height;
+                match line.segments.iter().find(|sg| !sg.is_tab) {
+                    Some(sg) if spills => {
+                        let bearing = crate::player::font::glyph_top_bearing(&sg.style.font);
+                        (top + bearing).floor() - bearing
+                    }
+                    _ => top,
+                }
+            };
 
             let mut x = x_start.max(0.0);
             let mut tab_index = 0usize;
@@ -1252,7 +1270,7 @@ impl FontMemberHandlers {
                 ctx.set_font(&segment.style.font);
                 // Always render in WHITE on the black canvas for coverage measurement
                 ctx.set_fill_style_str("rgb(255,255,255)");
-                let _ = ctx.fill_text(&segment.text, x, y + line_leading);
+                let _ = ctx.fill_text(&segment.text, x, line_top);
 
                 // Record this segment's color region for per-run color lookup
                 // during the downscale. These rects are matched against OUTPUT
@@ -1267,7 +1285,7 @@ impl FontMemberHandlers {
                 // rect or miss entirely and fall back to `fallback_color`, so a
                 // single render comes out in two colors (dkbarrel's Help
                 // dialog, which is why it only broke once scrolling worked).
-                let canvas_y = y + line_leading + start_y as f64;
+                let canvas_y = line_top + start_y as f64;
                 seg_color_rects.push((
                     x,
                     x + segment.width,
@@ -1277,7 +1295,7 @@ impl FontMemberHandlers {
                 ));
 
                 if segment.style.underline {
-                    let underline_y = y + line_leading + segment.style.size_px - 1.0;
+                    let underline_y = line_top + segment.style.size_px - 1.0;
                     ctx.begin_path();
                     ctx.move_to(x, underline_y);
                     ctx.line_to(x + segment.width, underline_y);

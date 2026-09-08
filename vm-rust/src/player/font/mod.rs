@@ -142,6 +142,55 @@ pub fn system_line_height_px(font_face: &str, size_px: f64) -> f64 {
 }
 
 /// Cached ratio lookup shared by the u16 and f64 entry points.
+/// Where a glyph's top lands below the "top" text baseline, in 1x pixels, on
+/// the 2x canvas the text rasterizer draws on. Chromium puts the glyph on a
+/// whole device row (floor of twice the y it is given) and then adds the
+/// font's own top bearing, which for Verdana at 36 px is five device rows: a
+/// half pixel at 1x. Director rasterises at 1x and puts the same glyph top on
+/// a whole pixel. Measured once per font string; 0 when it cannot be measured.
+pub fn glyph_top_bearing(font: &str) -> f64 {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static BEARINGS: RefCell<HashMap<String, f64>> = RefCell::new(HashMap::new());
+    }
+    BEARINGS.with(|cache| {
+        if let Some(b) = cache.borrow().get(font) {
+            return *b;
+        }
+        let measured = measure_glyph_top_bearing(font).unwrap_or(0.0);
+        cache.borrow_mut().insert(font.to_string(), measured);
+        measured
+    })
+}
+
+fn measure_glyph_top_bearing(font: &str) -> Option<f64> {
+    use wasm_bindgen::JsCast;
+    const W: u32 = 160;
+    const H: u32 = 400;
+    let doc = web_sys::window()?.document()?;
+    let canvas: web_sys::HtmlCanvasElement =
+        doc.create_element("canvas").ok()?.dyn_into().ok()?;
+    canvas.set_width(W);
+    canvas.set_height(H);
+    let ctx: web_sys::CanvasRenderingContext2d =
+        canvas.get_context("2d").ok()??.dyn_into().ok()?;
+    ctx.scale(2.0, 2.0).ok()?;
+    ctx.set_font(font);
+    ctx.set_text_baseline("top");
+    ctx.set_fill_style_str("#fff");
+    ctx.fill_text("H", 4.0, 0.0).ok()?;
+    let data = ctx.get_image_data(0.0, 0.0, W as f64, H as f64).ok()?.data();
+    for row in 0..H as usize {
+        let start = row * W as usize * 4;
+        let inked = (0..W as usize).any(|x| data[start + x * 4 + 3] > 127);
+        if inked {
+            return Some(row as f64 / 2.0);
+        }
+    }
+    None
+}
+
 fn measure_font_line_ratio_cached(family: &str) -> Option<f32> {
     use std::cell::RefCell;
     use std::collections::HashMap;
