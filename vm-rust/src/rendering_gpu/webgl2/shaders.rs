@@ -431,6 +431,7 @@ in vec2 v_texcoord;
 uniform sampler2D u_texture;
 uniform float u_blend;
 uniform vec4 u_bg_color;
+uniform float u_color_tolerance;
 
 out vec4 fragColor;
 
@@ -480,10 +481,12 @@ vec4 sampleSprite(vec2 tc) {
 void main() {
     vec4 src = sampleSprite(v_texcoord);
 
-    // Color-key transparency: discard pixels matching bgColor
-    // Use small threshold for floating point comparison
+    // Color-key transparency: discard pixels matching bgColor. The
+    // tolerance is 0 when the bitmap carries its own alpha, so a white
+    // pixel inside an alpha-masked image keeps adding (see mod.rs).
     vec3 diff = abs(src.rgb - u_bg_color.rgb);
-    if (diff.r < 0.004 && diff.g < 0.004 && diff.b < 0.004) discard;
+    float dist = max(max(diff.r, diff.g), diff.b);
+    if (dist < u_color_tolerance) discard;
 
     // Also discard fully transparent pixels (from embedded alpha)
     if (src.a < 0.01) discard;
