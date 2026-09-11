@@ -4609,7 +4609,13 @@ impl WebGL2Renderer {
                     matches!(colorize_params, Some((has_f, has_b, ..)) if has_f || has_b);
                 // 16-bit bitmaps need higher tolerance due to RGB565 quantization:
                 // max error is ~4/255 ≈ 0.016, so use 0.02 to cover rounding
-                let tolerance = if bitmap_bit_depth == 1 || is_indexed_ink40 || colorize_baked {
+                // A 32-bit bitmap with its own alpha channel is not keyed
+                // under Add Pin: measured on the projector, a hovered
+                // building whose image and animated top are white where
+                // they are opaque draws solid white, while keying the
+                // white pixels left the ground showing through them.
+                let alpha_masked_add_pin = ink == 33 && bitmap_bit_depth == 32 && bitmap_use_alpha;
+                let tolerance = if bitmap_bit_depth == 1 || is_indexed_ink40 || colorize_baked || alpha_masked_add_pin {
                     0.0
                 } else if bitmap_bit_depth == 16 {
                     0.02
