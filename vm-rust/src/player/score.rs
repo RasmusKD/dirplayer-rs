@@ -782,7 +782,15 @@ impl Score {
                     } else if sprite.visible {
                         // Visible non-puppet sprite leaving its span → full reset,
                         // but keep the last on-screen rect for empty-channel reads.
+                        // locZ survives: a script sets it once and Director keeps
+                        // it while the channel is reused. Measured on the projector:
+                        // a map sets its platforms' locZ below a tip box in its
+                        // init script, then passes a frame where those channels
+                        // have no span; the platforms stayed under the box there,
+                        // while the reset put the visible one back on top.
+                        let loc_z = sprite.loc_z;
                         sprite.reset();
+                        sprite.loc_z = loc_z;
                         sprite.retained_rect = retained_rect;
                         true
                     } else {
