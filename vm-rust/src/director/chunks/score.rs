@@ -474,7 +474,10 @@ pub struct ScoreFrameDataHeader {
 
 #[derive(Clone, Debug)]
 pub struct SoundChannelData {
-    pub cast_member: u8,
+    /// Member number as the score stores it (16 bits): a movie that keeps
+    /// its music above member 255 pointed at the wrong member when this was
+    /// a byte, and the score sound channel stayed silent.
+    pub cast_member: u16,
 }
 
 impl SoundChannelData {
@@ -493,7 +496,7 @@ impl SoundChannelData {
             .map_err(|e| format!("Failed to read cast_member: {:?}", e))?;
         
         Ok(SoundChannelData {
-            cast_member,
+            cast_member: cast_member as u16,
         })
     }
 }
@@ -757,7 +760,7 @@ impl ScoreFrameData {
                     if sound1_member != 0 {
                         debug!("D4 Sound 1 in frame {}: cast_member={}", frame_index, sound1_member);
                         sound_channel_data.push((frame_index, 3, SoundChannelData {
-                            cast_member: sound1_member as u8,
+                            cast_member: sound1_member,
                         }));
                     }
 
@@ -767,7 +770,7 @@ impl ScoreFrameData {
                     if sound2_member != 0 {
                         debug!("D4 Sound 2 in frame {}: cast_member={}", frame_index, sound2_member);
                         sound_channel_data.push((frame_index, 4, SoundChannelData {
-                            cast_member: sound2_member as u8,
+                            cast_member: sound2_member,
                         }));
                     }
 
@@ -874,7 +877,7 @@ impl ScoreFrameData {
                     if sound1_member != 0 {
                         debug!("Sound 1 in frame {}: cast_member={}", frame_index, sound1_member);
                         sound_channel_data.push((frame_index, 3, SoundChannelData {
-                            cast_member: sound1_member as u8,
+                            cast_member: sound1_member,
                         }));
                     }
 
@@ -884,7 +887,7 @@ impl ScoreFrameData {
                     if sound2_member != 0 {
                         debug!("Sound 2 in frame {}: cast_member={}", frame_index, sound2_member);
                         sound_channel_data.push((frame_index, 4, SoundChannelData {
-                            cast_member: sound2_member as u8,
+                            cast_member: sound2_member,
                         }));
                     }
 
