@@ -2586,18 +2586,25 @@ impl WebGL2Renderer {
                             //   (matches non-WebGL2 PFR bitmap rendering where sprite.color always wins)
                             // - span has no color set (fill in missing values)
                             if has_fore_color || (fg_color != ColorRef::PaletteIndex(255) && fg_color != ColorRef::Rgb(0, 0, 0)) || style.color.is_none() {
-                                style.color = match &text_fg_color {
-                                    ColorRef::Rgb(r, g, b) => {
-                                        Some(((*r as u32) << 16) | ((*g as u32) << 8) | (*b as u32))
-                                    }
-                                    ColorRef::PaletteIndex(idx) => {
-                                        match *idx {
-                                            0 => Some(0xFFFFFF),
-                                            255 => Some(0x000000),
-                                            _ => Some(0x000000),
-                                        }
-                                    }
+                                let fg_rgb: u32 = match &text_fg_color {
+                                    ColorRef::Rgb(r, g, b) => ((*r as u32) << 16) | ((*g as u32) << 8) | (*b as u32),
+                                    ColorRef::PaletteIndex(idx) => match *idx {
+                                        0 => 0xFFFFFF,
+                                        _ => 0x000000,
+                                    },
                                 };
+                                // The sprite's foreColor combines with a span's own
+                                // colour rather than replacing it: measured on the
+                                // projector, a member whose text is black with one
+                                // word cyan and one purple, on a sprite coloured
+                                // white, draws white text with a red and a green
+                                // word. That is the span colour XOR the foreColor
+                                // per channel, which for the default black foreColor
+                                // leaves every span as authored.
+                                style.color = Some(match style.color {
+                                    Some(c) => (c ^ fg_rgb) & 0xFFFFFF,
+                                    None => fg_rgb,
+                                });
                             }
 
                             // Per-span bold/italic/underline are authoritative.
