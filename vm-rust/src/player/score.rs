@@ -1555,7 +1555,7 @@ impl Score {
 
         // handle score Sound 1 + Sound 2 in Effects Channels
         // Build a map of (frame_index, channel_index) -> cast_member for quick lookup
-        let sound_by_frame_channel: HashMap<(u32, u16), u8> = self.sound_channel_data.iter()
+        let sound_by_frame_channel: HashMap<(u32, u16), u16> = self.sound_channel_data.iter()
             .map(|(frame_idx, ch_idx, data)| ((*frame_idx, *ch_idx), data.cast_member))
             .collect();
 
