@@ -137,6 +137,12 @@ pub struct Score {
     pub transition_channel_data: Vec<(u32, i16, i16)>,
     pub frame_labels: Vec<FrameLabel>,
     pub sound_channel_triggered: HashMap<u16, u32>,
+    /// Per effects channel: the (member, span start frame index) of the sound
+    /// span that has already been started. A span is started on whichever of
+    /// its frames the playhead first lands on, not only its first frame: a
+    /// movie whose start script jumps past frame 1 still gets the music its
+    /// score puts there. Once started it is not restarted within the span.
+    pub sound_span_started: HashMap<u16, (u16, u32)>,
     pub keyframes_cache: Arc<HashMap<u16, ChannelKeyframes>>,
     /// Sprite detail behaviors indexed by spriteListIdx (D6+)
     pub sprite_details: HashMap<u32, crate::director::chunks::score::SpriteDetailInfo>,
@@ -278,6 +284,7 @@ impl Score {
             sprite_spans: vec![],
             frame_script_cache: std::cell::RefCell::new(None),
             sound_channel_triggered: HashMap::new(),
+            sound_span_started: HashMap::new(),
             keyframes_cache: Arc::new(HashMap::new()),
             sprite_details: HashMap::new(),
             entry_lengths: Vec::new(),
@@ -695,6 +702,7 @@ impl Score {
             if should_clear_all {
                 // Clear all triggers to allow sounds to replay
                 self.sound_channel_triggered.clear();
+                self.sound_span_started.clear();
             } else {
                 // Normal progression - only clear triggers for sounds that are no longer on the current frame
                 let sounds_on_current_frame: HashSet<u16> = self
@@ -1577,8 +1585,22 @@ impl Score {
                     Some(&prev_cast_member) => prev_cast_member != sound_data.cast_member, // Different sound
                 };
 
-                if !is_new_sound_span {
-                    // This is a continuation of the same sound, skip
+                // The frame index where this span of the same member begins.
+                let span_start = {
+                    let mut f = *frame_index;
+                    while f > 0
+                        && sound_by_frame_channel.get(&(f - 1, *channel_index))
+                            == Some(&sound_data.cast_member)
+                    {
+                        f -= 1;
+                    }
+                    f
+                };
+                if !is_new_sound_span
+                    && self.sound_span_started.get(channel_index)
+                        == Some(&(sound_data.cast_member, span_start))
+                {
+                    // Landed inside a span that already started: keep going.
                     continue;
                 }
                 // Check if we've already triggered this sound on this frame
@@ -1689,6 +1711,8 @@ impl Score {
                 // Mark that we've triggered this sound on this frame
                 self.sound_channel_triggered
                     .insert(*channel_index, frame_num);
+                self.sound_span_started
+                    .insert(*channel_index, (sound_data.cast_member, span_start));
             }
         }
 
@@ -4938,6 +4962,7 @@ pub fn sprite_set_prop(sprite_id: i16, prop_name: Symbol, value: Datum) -> Resul
                                         crate::player::filmloop_probe::note_reset();
                                         film_loop.current_frame = 1;
                                         film_loop.score.sound_channel_triggered.clear();
+                                        film_loop.score.sound_span_started.clear();
                                         film_loop.score.last_sound_clear_frame = None;
                                     }
                                 }
