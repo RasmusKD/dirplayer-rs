@@ -1609,8 +1609,11 @@ impl Score {
 
                 let sound_channel = if *channel_index == 3 { 2 } else { 1 };
 
-                reserve_player_mut(|player| {
-                    if player.is_playing {
+                let started = reserve_player_mut(|player| {
+                    if !player.is_playing {
+                        return false;
+                    }
+                    {
                         // First check if this exact sound is already playing on this channel
                         let already_playing = player
                             .sound_manager
@@ -1687,28 +1690,36 @@ impl Score {
                                     let member_ref =
                                         player.alloc_datum(Datum::CastMember(cast_member_ref));
 
-                                    let _ = player.puppet_sound(sound_channel, member_ref);
+                                    return player.puppet_sound(sound_channel, member_ref).is_ok();
                                 }
+                                false
                             } else {
                                 debug!(
                                     "Sound member not found: cast_member={} score_ref={:?}",
                                     sound_data.cast_member, score_ref
                                 );
+                                false
                             }
                         } else {
                             debug!(
                                 "SoundChannel {} already playing from channel_index {}",
                                 sound_channel, channel_index
                             );
+                            true
                         }
                     }
                 });
 
-                // Mark that we've triggered this sound on this frame
-                self.sound_channel_triggered
-                    .insert(*channel_index, frame_num);
-                self.sound_span_started
-                    .insert(*channel_index, (sound_data.cast_member, span_start));
+                // Remember the start only if it happened. The first frame a
+                // movie shows can come before it is playing, and a span marked
+                // as started there would never get its sound on the frames
+                // that follow.
+                if started {
+                    self.sound_channel_triggered
+                        .insert(*channel_index, frame_num);
+                    self.sound_span_started
+                        .insert(*channel_index, (sound_data.cast_member, span_start));
+                }
             }
         }
 
