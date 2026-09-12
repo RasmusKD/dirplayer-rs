@@ -220,15 +220,32 @@ impl Movie {
             BuiltInSymbol::ExitLock => Ok(datum_bool(self.exit_lock)),
             BuiltInSymbol::ItemDelimiter => Ok(Datum::String(self.item_delimiter.into())),
             BuiltInSymbol::RunMode => Ok(Datum::String("Plugin".to_string())), // Plugin / Author
-            BuiltInSymbol::Date => {
-                // TODO localize formatting
+            // The date and time properties in their three forms. Formats
+            // follow the Lingo dictionary's examples for a US system; the
+            // projector takes them from the OS locale, which is not known here.
+            BuiltInSymbol::Date | BuiltInSymbol::ShortDate => {
                 let time = Local::now();
                 let formatted = time.format("%m/%d/%Y").to_string();
                 Ok(Datum::String(formatted))
             },
+            BuiltInSymbol::AbbrDate => {
+                let time = Local::now();
+                let formatted = time.format("%a, %b %-d, %Y").to_string();
+                Ok(Datum::String(formatted))
+            },
+            BuiltInSymbol::LongDate => {
+                let time = Local::now();
+                let formatted = time.format("%A, %B %-d, %Y").to_string();
+                Ok(Datum::String(formatted))
+            },
+            BuiltInSymbol::Time | BuiltInSymbol::ShortTime | BuiltInSymbol::AbbrTime => {
+                let time = Local::now();
+                let formatted = time.format("%-I:%M %p").to_string();
+                Ok(Datum::String(formatted))
+            },
             BuiltInSymbol::LongTime => {
                 let time = Local::now();
-                let formatted = time.format("%H:%M:%S %p").to_string();
+                let formatted = time.format("%-I:%M:%S %p").to_string();
                 Ok(Datum::String(formatted))
             },
             BuiltInSymbol::LastChannel => Ok(Datum::Int(self.score.get_channel_count() as i32)),
