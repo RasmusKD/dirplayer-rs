@@ -464,10 +464,19 @@ impl DirectorProperty for Height {
 }
 
 
-/// Convert channel index (stored in score) to channel number (displayed in Director)
+/// Convert channel index (stored in score) to channel number (displayed in Director).
+///
+/// Indices 0 to 5 are the effects channels (script, tempo, palette, transition
+/// and the two sounds), which own no sprite; sprite channel 1 is index 6. They
+/// all map to 0 here, as `get_channel_number_from_index` does, so that an
+/// interval authored on an effects channel is never keyed as if it belonged
+/// to sprite channel 1 to 5. Mapping them to their own index did that: the
+/// second sound channel's interval over frames 1 to 28 became sprite 4's, its
+/// two positions in that range were read as a path tween, and the tween wrote
+/// the score position back over a script's placement on every frame.
 pub fn index_to_channel_number(index: u16) -> u16 {
     if index <= 5 {
-        index
+        0
     } else {
         index - 5
     }
