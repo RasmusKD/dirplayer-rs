@@ -913,7 +913,8 @@ impl StringChunkHandlers {
         enum StyleChange {
             Font(String),
             FontSize(i32),
-            FontStyle { bold: bool, italic: bool, underline: bool },
+            /// `None` leaves that flag as the chunk has it.
+            FontStyle { bold: Option<bool>, italic: Option<bool>, underline: Option<bool> },
             Color(u32),
             /// Director chapter 15 `hyperlink` — per-character link target
             /// stored on `HtmlStyle.hyperlink`. Setting empty string clears.
@@ -927,9 +928,9 @@ impl StringChunkHandlers {
             "fontstyle" => {
                 // Director accepts either a single symbol (#bold) or a list
                 // of symbols ([#bold, #underline]). #plain resets the style.
-                let mut bold = false;
-                let mut italic = false;
-                let mut underline = false;
+                let mut bold = None;
+                let mut italic = None;
+                let mut underline = None;
                 let symbols: Vec<Symbol> = match &value_datum {
                     Datum::Symbol(s) => vec![s.clone()],
                     Datum::List(_, items, _) => {
@@ -943,15 +944,22 @@ impl StringChunkHandlers {
                     }
                     _ => Vec::new(),
                 };
-                for s in symbols.iter() {
+                // On a chunk, only the first entry of the list takes effect,
+                // and it is added to the styles the chunk already has; #plain
+                // clears them. Measured on the projector: a word given
+                // [#italic, #bold] draws italic at regular weight, the first
+                // character of a bold member given [#underline, #bold] stays
+                // bold and gains the underline, and a word given [#bold]
+                // alone is bold.
+                for s in symbols.iter().take(1) {
                     match s.into_builtin() {
-                        Some(BuiltInSymbol::Bold) => bold = true,
-                        Some(BuiltInSymbol::Italic) => italic = true,
-                        Some(BuiltInSymbol::Underline) => underline = true,
+                        Some(BuiltInSymbol::Bold) => bold = Some(true),
+                        Some(BuiltInSymbol::Italic) => italic = Some(true),
+                        Some(BuiltInSymbol::Underline) => underline = Some(true),
                         Some(BuiltInSymbol::Plain) => {
-                            bold = false;
-                            italic = false;
-                            underline = false;
+                            bold = Some(false);
+                            italic = Some(false);
+                            underline = Some(false);
                         }
                         _ => {}
                     }
@@ -1009,9 +1017,9 @@ impl StringChunkHandlers {
                         StyleChange::Font(f) => style.font_face = Some(f.clone()),
                         StyleChange::FontSize(sz) => style.font_size = Some(*sz),
                         StyleChange::FontStyle { bold, italic, underline } => {
-                            style.bold = *bold;
-                            style.italic = *italic;
-                            style.underline = *underline;
+                            if let Some(b) = bold { style.bold = *b; }
+                            if let Some(i) = italic { style.italic = *i; }
+                            if let Some(u) = underline { style.underline = *u; }
                         }
                         StyleChange::Color(rgb) => style.color = Some(*rgb),
                         StyleChange::Hyperlink(link) => {
@@ -1034,10 +1042,11 @@ impl StringChunkHandlers {
                     // whole member — matches Director's field behaviour.
                     StyleChange::FontSize(sz) => field.font_size = (*sz).max(0) as u16,
                     StyleChange::FontStyle { bold, italic, underline } => {
+                        let had = field.font_style.to_lowercase();
                         let mut parts: Vec<&str> = Vec::new();
-                        if *bold { parts.push("bold"); }
-                        if *italic { parts.push("italic"); }
-                        if *underline { parts.push("underline"); }
+                        if bold.unwrap_or(had.contains("bold")) { parts.push("bold"); }
+                        if italic.unwrap_or(had.contains("italic")) { parts.push("italic"); }
+                        if underline.unwrap_or(had.contains("underline")) { parts.push("underline"); }
                         field.font_style = if parts.is_empty() { "plain".to_string() } else { parts.join(",") };
                     }
                     StyleChange::Color(rgb) => {
