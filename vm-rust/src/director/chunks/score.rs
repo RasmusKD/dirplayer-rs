@@ -482,21 +482,20 @@ pub struct SoundChannelData {
 
 impl SoundChannelData {
     pub fn read(reader: &mut BinaryReader) -> Result<SoundChannelData, String> {
-        let _unk0 = reader
-            .read_u8()
-            .map_err(|e| format!("Failed to read unk0: {:?}", e))?;
-        let _unk1 = reader
-            .read_u8()
-            .map_err(|e| format!("Failed to read unk1: {:?}", e))?;
-        let _unk2 = reader
-            .read_u8()
-            .map_err(|e| format!("Failed to read unk2: {:?}", e))?;
+        // Laid out like the transition and palette channels: castLib at
+        // bytes 0-1 (1, or -1 for the movie's own cast), member at bytes
+        // 2-3. Reading only the last byte kept the low byte of the member
+        // number, so a sound above member 255 pointed at the wrong slot
+        // (member 307 became 51) and the score's digging noise never played.
+        let _cast_lib = reader
+            .read_i16()
+            .map_err(|e| format!("Failed to read sound castLib: {:?}", e))?;
         let cast_member = reader
-            .read_u8()
-            .map_err(|e| format!("Failed to read cast_member: {:?}", e))?;
-        
+            .read_i16()
+            .map_err(|e| format!("Failed to read sound member: {:?}", e))?;
+
         Ok(SoundChannelData {
-            cast_member: cast_member as u16,
+            cast_member: cast_member.max(0) as u16,
         })
     }
 }
