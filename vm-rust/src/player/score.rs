@@ -6464,7 +6464,38 @@ pub fn get_concrete_sprite_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect 
                     } else {
                         return None;
                     };
-                    let line_count = text_member.text.matches(|c| c == '\n' || c == '\r').count() as i32 + 1;
+                    let break_lines = text_member.text.matches(|c| c == '\n' || c == '\r').count() as i32 + 1;
+                    // A wrapping member has more lines than its breaks say.
+                    // Count them the way the browser lays the text out, as
+                    // the field path does; a two-line caption at 24 px
+                    // otherwise kept a one-line box and lost its second line.
+                    let line_count = if text_member.word_wrap && text_member.font_size > 0 {
+                        use crate::player::handlers::datum_handlers::cast_member::font::FontMemberHandlers;
+                        let mut style: u8 = 0;
+                        for tag in &text_member.font_style {
+                            match tag {
+                                BuiltInSymbol::Bold => style |= 1,
+                                BuiltInSymbol::Italic => style |= 2,
+                                BuiltInSymbol::Underline => style |= 4,
+                                _ => {}
+                            }
+                        }
+                        let (_, h) = FontMemberHandlers::measure_text_native_styled(
+                            &text_member.text,
+                            if text_member.font.is_empty() { "Arial" } else { text_member.font.as_str() },
+                            text_member.font_size,
+                            if style == 0 { None } else { Some(style) },
+                            true,
+                            text_width,
+                            0,
+                            0,
+                            0,
+                        );
+                        let fs = text_member.font_size as i32;
+                        ((h as i32 + fs / 2) / fs).max(break_lines)
+                    } else {
+                        break_lines
+                    };
                     Some(per_line * line_count
                         + text_member.top_spacing as i32
                         + text_member.bottom_spacing as i32)
