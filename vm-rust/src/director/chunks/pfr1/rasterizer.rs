@@ -755,6 +755,15 @@ pub fn rasterize_pfr1_font_with_options(
             let v2 = ((out_res_i >> 1) + ((csw as i32) << 16)) / out_res_i;
             let advance_16_16 = fixed_point_multiply16(v2, matrix2136_a);
             let advance_px = ((advance_16_16 + 0x8000) & !0xFFFF) >> 16;
+            // The projector places the next glyph one pixel further than
+            // this rounded width. Measured on two fonts and sizes: across a
+            // line of Verdana at 24 px the word starts run ahead of the
+            // rounded widths by one pixel per glyph (the last word at 370
+            // against 341 plus 30 glyphs), and Arial digits at 48 px sit on
+            // a 28 px pitch where the rounded width is 27. Word wrapping
+            // follows the same widths, so a line the projector breaks one
+            // word earlier now breaks there too.
+            let advance_px = advance_px + 1;
             (advance_px.max(if glyph.set_width > 0.0 { 1 } else { 0 })) as usize
         } else {
             0
