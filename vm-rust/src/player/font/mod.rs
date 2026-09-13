@@ -555,6 +555,20 @@ impl FontManager {
         s.to_ascii_lowercase()
     }
 
+    /// Forget every font rasterised for the movie that is being replaced.
+    /// Fonts belong to a movie's casts: a text member naming a font its own
+    /// movie does not carry falls back to the player's default face, and it
+    /// must do so again after another movie has come and gone. With the
+    /// cache kept, a menu that drew bold and underlined from the default
+    /// face on the first visit drew plain, in a different face, after a
+    /// movie that embedded a font of the same family had been played. The
+    /// system font, the embedded default faces and the ref counter stay.
+    pub fn clear_movie_fonts(&mut self) {
+        self.font_cache.clear();
+        self.fonts.clear();
+        self.font_by_id.clear();
+    }
+
     pub fn get_system_font(&self) -> Option<Rc<BitmapFont>> {
         self.system_font.clone()
     }

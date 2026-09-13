@@ -1499,6 +1499,7 @@ impl DirPlayer {
 
         // Load all fonts from cast members into the font manager
         log::debug!("Loading fonts from cast members...");
+        self.font_manager.clear_movie_fonts();
         self.movie
             .cast_manager
             .load_fonts_into_manager(&mut self.font_manager);
