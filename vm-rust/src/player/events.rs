@@ -145,6 +145,33 @@ pub fn dispatch_rollover_events() {
     }
 }
 
+/// The same pass as `dispatch_rollover_events`, but delivered now rather
+/// than through the event queue. A press handler must see the hover
+/// change first: queued, the mouseEnter of a freshly pressed sprite ran
+/// only after its mouseDown and mouseUp had.
+pub async fn dispatch_rollover_events_now() {
+    let (now_hovered, prev_hovered) = reserve_player_mut(|player| {
+        let (x, y) = player.mouse_loc;
+        let prev_hovered = std::mem::take(&mut player.hovered_sprites);
+        let now_hovered: Vec<i16> = crate::player::score::get_sprites_at(player, x, y)
+            .first()
+            .map(|num| *num as i16)
+            .into_iter()
+            .collect();
+        player.hovered_sprites = now_hovered.clone();
+        (now_hovered, prev_hovered)
+    });
+    for sprite_num in &prev_hovered {
+        if !now_hovered.contains(sprite_num) {
+            player_dispatch_event_to_sprite_targeted(Symbol::from_str("mouseLeave"), &vec![], *sprite_num as u16).await;
+        }
+    }
+    for sprite_num in &now_hovered {
+        let handler = if prev_hovered.contains(sprite_num) { "mouseWithin" } else { "mouseEnter" };
+        player_dispatch_event_to_sprite_targeted(Symbol::from_str(handler), &vec![], *sprite_num as u16).await;
+    }
+}
+
 pub async fn player_dispatch_event_to_sprite_targeted(
     handler_name: Symbol,
     args: &Vec<DatumRef>,

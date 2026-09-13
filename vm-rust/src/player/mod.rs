@@ -1584,6 +1584,16 @@ impl DirPlayer {
 
     pub fn begin_all_sprites(&mut self) {
         self.movie.score.begin_sprites(ScoreRef::Stage, self.movie.current_frame);
+        // A channel whose span just began holds a new sprite, so it is not
+        // hovered until the pointer is seen over it, even when the previous
+        // span's sprite was. Otherwise a button placed by the next span
+        // exactly where the button that led there stood got mouseWithin
+        // instead of mouseEnter, and a behaviour that sizes buttons on
+        // mouseEnter gave it the earlier button's remembered size.
+        let fresh = std::mem::take(&mut self.movie.score.freshly_entered);
+        if !fresh.is_empty() {
+            self.hovered_sprites.retain(|n| !fresh.contains(&(*n as u16)));
+        }
 
         // Cache the tempo for this frame
         self.refresh_frame_tempo();

@@ -158,6 +158,10 @@ pub struct Score {
     /// Channels that have spans from frame_intervals (not from extend_sprite_spans).
     /// Used to prevent per-frame delta initialization from showing sprites outside their span range.
     pub channels_with_frame_interval_spans: HashSet<u32>,
+    /// Channels whose span began in the last `begin_sprites` pass. The
+    /// player takes them out of its hover set: a new span is a new sprite,
+    /// and it gets its mouseEnter once the pointer is seen over it.
+    pub freshly_entered: Vec<u16>,
     /// Total frame count (used for auto-looping back to frame 1 when past last frame)
     pub frame_count: Option<u32>,
     /// Active non-puppet channel numbers derived from sprite_spans, cached per frame.
@@ -289,6 +293,7 @@ impl Score {
             last_sound_clear_frame: None,
             needs_per_frame_updates: false,
             channels_with_frame_interval_spans: HashSet::new(),
+            freshly_entered: Vec::new(),
             frame_count: None,
             active_channels_cache: RefCell::new(HashMap::new()),
             sorted_channels_cache: RefCell::new(None),
@@ -1425,6 +1430,7 @@ impl Score {
                     sprite.base_blend = sprite.blend;
                     sprite.base_skew = sprite.skew;
                     sprite.entered = true;
+                    self.freshly_entered.push(sprite_num as u16);
                 }
             }
         }
@@ -1730,6 +1736,7 @@ impl Score {
         for span in &spans_to_enter {
             let sprite = self.get_sprite_mut(span.channel_number as i16);
             sprite.entered = true;
+            self.freshly_entered.push(span.channel_number as u16);
         }
 
         // Attach behaviors and set their parameters - GROUP BY CHANNEL
@@ -2642,6 +2649,7 @@ impl Score {
             .collect();
 
         for (channel_num, data) in &sprites_to_init {
+            self.freshly_entered.push(*channel_num as u16);
             let sprite = self.get_sprite_mut(*channel_num);
             sprite.entered = true;
 
