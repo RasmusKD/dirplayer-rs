@@ -6951,12 +6951,15 @@ impl WebGL2Renderer {
                         .and_then(|n| wrap_variants.get(&n.to_ascii_lowercase()))
                         .map(|v| &*v.font);
                     let measure_font = variant_font.unwrap_or(&*font);
+                    // A run bold on a regular face is synthesised at draw
+                    // time and advances one pixel further per glyph.
+                    let bold_extra = if style.bold && variant_font.is_none() && measure_font.font_style & 1 == 0 { 1 } else { 0 };
                     token_text
                         .chars()
                         .map(|c| {
                             let raw = ((measure_font.get_char_advance(c as u8) as i32) * scale_num / scale_den)
                                 .max(1);
-                            if c == ' ' { raw.max(space_min) } else { raw }
+                            (if c == ' ' { raw.max(space_min) } else { raw }) + bold_extra
                         })
                         .sum()
                 };
@@ -7233,6 +7236,7 @@ impl WebGL2Renderer {
                         // the glyph shapes — suppress fake-bold and
                         // fake-italic so we don't stack them on top.
                         let apply_fake_bold = run.style.bold && !use_variant;
+                        let fake_bold_extra = if apply_fake_bold && run_font.font_style & 1 == 0 { 1 } else { 0 };
                         let apply_fake_italic = run.style.italic && !use_variant;
                         let italic_default_size = apply_fake_italic && span_is_default_size;
                         let underline_y = y + char_h - 1;
@@ -7255,7 +7259,7 @@ impl WebGL2Renderer {
                                 raw_advance.max(space_min)
                             } else {
                                 raw_advance
-                            };
+                            } + fake_bold_extra;
 
                             if ch == ' ' {
                                 x += advance;

@@ -6443,7 +6443,22 @@ pub fn get_concrete_sprite_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect 
                 // match text_member.font_size and gives a wrong measurement.
                 // For system fonts (Arial, etc.), use a font-size-based estimate
                 // since native text uses Canvas2D which we can't measure here.
-                let font = player.font_manager.font_cache.get(&cache_key).cloned();
+                // The font cached for the member's own size and style comes
+                // first: synthesised bold carries wider advances.
+                let style_bits = text_member.font_style.iter().fold(0u8, |acc, s| match s {
+                    BuiltInSymbol::Bold => acc | 1,
+                    BuiltInSymbol::Italic => acc | 2,
+                    BuiltInSymbol::Underline => acc | 4,
+                    _ => acc,
+                });
+                let styled_key = FontManager::cache_key(&format!("{}_{}_{}", text_member.font, text_member.font_size, style_bits));
+                let font = player
+                    .font_manager
+                    .font_cache
+                    .get(&styled_key)
+                    .filter(|f| f.font_size == text_member.font_size)
+                    .or_else(|| player.font_manager.font_cache.get(&cache_key))
+                    .cloned();
                 // Force wrap-aware measurement for puppet text members
                 // even when `word_wrap` is false on the member. Director
                 // grows puppet sprites to fit all visible content; if
