@@ -1902,6 +1902,14 @@ impl SoundChannel {
                 // playing 2-3). The async task / error paths below take over the
                 // Loading → Playing/Idle transitions from here.
                 this.status = SoundStatus::Loading;
+                // `soundBusy` treats a channel that has sat in Loading for
+                // more than five seconds as stuck and idles it, measuring
+                // from this stamp. Left at the previous sound's start time,
+                // a sound started more than five seconds after the last one
+                // was idled by the very first `soundBusy` after its
+                // puppetSound: a frame script that holds while the
+                // narration plays moved on at once.
+                this.playback_start_context_time = this.context_time();
             }
             // Stash sound_member + cue cursor are set further below, inside
             // the async resampling completion block — at the exact moment we
