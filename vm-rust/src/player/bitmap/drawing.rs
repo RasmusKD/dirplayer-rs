@@ -3412,7 +3412,14 @@ impl Bitmap {
                 // so the eventual stage composite produces the correct
                 // translucent fade (white spotlight at 30% opacity = white
                 // at α=0.3, not opaque grey).
-                if !params.is_text_rendering && ink == 32
+                //
+                // Copy ink on a 32-bit source with its own alpha takes the
+                // same path: the projector keeps that alpha, scaled by the
+                // sprite blend. Through set_pixel_fast the source was lerped
+                // toward the cleared black offscreen and stamped opaque, so
+                // a soft grey plume in a film loop came out as solid black.
+                let alpha_source_copy = ink == 0 && src.original_bit_depth == 32 && src.use_alpha;
+                if !params.is_text_rendering && (ink == 32 || alpha_source_copy)
                     && self.bit_depth == 32 && self.use_alpha
                 {
                     let src_a = sa as f32 / 255.0;
