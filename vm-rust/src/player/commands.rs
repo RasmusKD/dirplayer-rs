@@ -1300,6 +1300,9 @@ pub async fn run_player_command(command: PlayerVMCommand) -> Result<DatumRef, Sc
             if !player_is_playing().await {
                 return Ok(DatumRef::Void);
             }
+            // As for the left button: the press position's mouseLeave and
+            // mouseEnter come before the press.
+            crate::player::events::dispatch_rollover_events_now().await;
             // Update mouse_loc + flag is already done in lib.rs
             // (right_mouse_down). Here we dispatch the `rightMouseDown`
             // event to the topmost active sprite (so behaviors with
