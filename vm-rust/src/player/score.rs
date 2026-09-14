@@ -164,6 +164,11 @@ pub struct Score {
     /// player takes them out of its hover set: a new span is a new sprite,
     /// and it gets its mouseEnter once the pointer is seen over it.
     pub freshly_entered: Vec<u16>,
+    /// Channels whose span began this frame; their tweens write on this
+    /// frame even where the tween is not moving.
+    pub just_entered: Vec<u16>,
+    /// The frame the tween pass last ran for, to tell a jump from a step.
+    pub last_tween_frame: Option<u32>,
     /// Total frame count (used for auto-looping back to frame 1 when past last frame)
     pub frame_count: Option<u32>,
     /// Active non-puppet channel numbers derived from sprite_spans, cached per frame.
@@ -297,6 +302,8 @@ impl Score {
             needs_per_frame_updates: false,
             channels_with_frame_interval_spans: HashSet::new(),
             freshly_entered: Vec::new(),
+            just_entered: Vec::new(),
+            last_tween_frame: None,
             frame_count: None,
             active_channels_cache: RefCell::new(HashMap::new()),
             sorted_channels_cache: RefCell::new(None),
@@ -2873,6 +2880,21 @@ impl Score {
 
     pub fn apply_tween_modifiers(&mut self, frame: u32) {
         let active_channels = self.active_channel_numbers_for_frame(frame);
+        // A tween writes a property only while its value is changing from
+        // one frame to the next. Where it holds (a single keyframe, or the
+        // frames after the last one) the Score leaves the sprite alone, so a
+        // value a script set stays, as it does in Director: a script that
+        // swaps a sprite's member and rotates it inside a span with size and
+        // rotation keyframes had both undone on the next frame, every
+        // member drawn stretched to the first member's size. The tween still
+        // writes on the frame a span begins and after a jump, so a frame
+        // reached out of order shows the held value rather than the base.
+        let jumped = self
+            .last_tween_frame
+            .map_or(true, |last| last != frame && last + 1 != frame);
+        self.last_tween_frame = Some(frame);
+        let just_entered = std::mem::take(&mut self.just_entered);
+        let prev_frame = frame.saturating_sub(1);
 
         for channel_number in active_channels {
             let Some(channel) = self.channels.get_mut(channel_number) else {
@@ -2890,6 +2912,7 @@ impl Score {
             let Some(keyframes) = self.keyframes_cache.get(&sprite_num) else {
                 continue;
             };
+            let force = jumped || just_entered.contains(&sprite_num);
 
             // ---- Position tween (additive) ----
             if let Some(path) = keyframes.path.as_ref() {
@@ -2898,6 +2921,7 @@ impl Score {
                     .as_ref()
                     .is_some_and(|t| t.is_path_tweened())
                     && path.is_active_at_frame(frame)
+                    && (force || path.get_position_at_frame(prev_frame) != path.get_position_at_frame(frame))
                 {
                     if let Some((dx, dy)) = path.get_delta_at_frame(
                         frame,
@@ -2925,6 +2949,7 @@ impl Score {
                     .as_ref()
                     .is_some_and(|t| t.is_size_tweened())
                     && size.is_active_at_frame(frame)
+                    && (force || size.get_size_at_frame(prev_frame) != size.get_size_at_frame(frame))
                 {
                     if let Some((dw, dh)) = size.get_delta_at_frame(
                         frame,
@@ -2960,6 +2985,7 @@ impl Score {
                     .as_ref()
                     .is_some_and(|t| t.is_rotation_tweened())
                     && rotation.is_active_at_frame(frame)
+                    && (force || rotation.get_rotation_at_frame(prev_frame) != rotation.get_rotation_at_frame(frame))
                 {
                     if let Some(dr) = rotation.get_delta_at_frame(
                         frame,
@@ -2985,6 +3011,7 @@ impl Score {
                     .as_ref()
                     .is_some_and(|t| t.is_blend_tweened())
                     && blend.is_active_at_frame(frame)
+                    && (force || blend.get_blend_at_frame(prev_frame) != blend.get_blend_at_frame(frame))
                 {
                     if let Some(value) = blend.get_blend_at_frame(frame) {
                         debug!(
@@ -3006,6 +3033,7 @@ impl Score {
                     .as_ref()
                     .is_some_and(|t| t.is_skew_tweened())
                     && skew.is_active_at_frame(frame)
+                    && (force || skew.get_skew_at_frame(prev_frame) != skew.get_skew_at_frame(frame))
                 {
                     if let Some(ds) = skew.get_delta_at_frame(
                         frame,
@@ -3031,6 +3059,7 @@ impl Score {
                     .as_ref()
                     .is_some_and(|t| t.is_forecolor_tweened())
                     && fore_color.is_active_at_frame(frame)
+                    && (force || fore_color.get_color_at_frame(prev_frame) != fore_color.get_color_at_frame(frame))
                 {
                     if let Some(color) = fore_color.get_color_at_frame(frame) {
                         debug!(
@@ -3057,6 +3086,7 @@ impl Score {
                     .as_ref()
                     .is_some_and(|t| t.is_backcolor_tweened())
                     && back_color.is_active_at_frame(frame)
+                    && (force || back_color.get_color_at_frame(prev_frame) != back_color.get_color_at_frame(frame))
                 {
                     if let Some(color) = back_color.get_color_at_frame(frame) {
                         debug!(

@@ -1651,6 +1651,7 @@ impl DirPlayer {
         if !fresh.is_empty() {
             self.hovered_sprites.retain(|n| !fresh.contains(&(*n as u16)));
         }
+        self.movie.score.just_entered = fresh;
 
         // Cache the tempo for this frame
         self.refresh_frame_tempo();
