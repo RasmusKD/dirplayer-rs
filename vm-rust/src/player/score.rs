@@ -1008,6 +1008,13 @@ impl Score {
                     cast_member: data.cast_member as i32,
                 };
 
+                // The span's own stretch flag goes first: the member setter
+                // keeps a stretched sprite's size, and a size a script gave
+                // the previous span's sprite (a button grown on hover) must
+                // not carry into this span. With the flag applied after the
+                // member, the new span's sprite kept the old sprite's size.
+                sprite.stretch = data.stretch as i32;
+                sprite.explicit_lingo_size = false;
                 // For Stage sprites, use sprite_set_prop which handles intrinsic size
                 // initialization and other side effects. For FilmLoop sprites, set
                 // member directly since sprite_set_prop always writes to main stage score.
@@ -1268,8 +1275,17 @@ impl Score {
                     cast_member: data.cast_member as i32,
                 };
 
-                // Update member if changed
+                // Update member if changed. The frame's stretch flag goes
+                // first: the member setter keeps a stretched sprite's size,
+                // and a size a script gave the sprite while it showed the
+                // previous member (a button grown on hover) must not carry
+                // over to the member the Score puts in the channel now.
                 let current_member = self.get_sprite(sprite_num).and_then(|s| s.member.clone());
+                if current_member.as_ref() != Some(&member) {
+                    let sprite = self.get_sprite_mut(sprite_num);
+                    sprite.stretch = data.stretch as i32;
+                    sprite.explicit_lingo_size = false;
+                }
                 match &score_ref {
                     ScoreRef::Stage => {
                         if current_member.as_ref() != Some(&member) {
@@ -1403,6 +1419,11 @@ impl Score {
                         cast_member: data.cast_member as i32,
                     };
 
+                    {
+                        let sprite = self.get_sprite_mut(sprite_num);
+                        sprite.stretch = data.stretch as i32;
+                        sprite.explicit_lingo_size = false;
+                    }
                     match &score_ref {
                         ScoreRef::Stage => {
                             let _ = sprite_set_prop(sprite_num, Symbol::builtin(BuiltInSymbol::Member), Datum::CastMember(member.clone()));
