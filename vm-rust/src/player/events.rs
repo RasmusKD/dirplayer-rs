@@ -245,7 +245,26 @@ pub async fn player_invoke_event_to_instances(
     })?;
 
     let mut handled = false;
+    let frame_at_start = reserve_player_ref(|player| player.movie.current_frame);
     for (script_instance_ref, handler_ref) in recv_instance_handlers {
+        // A handler that jumped to another frame may have ended the span
+        // these behaviours belong to; the channel now holds the next span's
+        // sprite. A behaviour no longer attached to any sprite gets no more
+        // of this event. Delivered anyway, a hover behaviour's mouseUp wrote
+        // the size it remembered for its button onto the sprite that had
+        // taken over the channel.
+        let frame_changed = reserve_player_ref(|player| player.movie.current_frame != frame_at_start);
+        if frame_changed {
+            let attached = reserve_player_ref(|player| {
+                let id = script_instance_ref.id();
+                player.movie.score.channels.iter().any(|channel| {
+                    channel.sprite.script_instance_list.iter().any(|r| r.id() == id)
+                })
+            });
+            if !attached {
+                continue;
+            }
+        }
         match player_call_script_handler(Some(script_instance_ref), handler_ref, args).await {
             Ok(scope) => {
                 if !scope.passed {
