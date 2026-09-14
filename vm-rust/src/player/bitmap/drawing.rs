@@ -2127,6 +2127,35 @@ impl Bitmap {
         )
     }
 
+    /// Composite one source pixel over an alpha-aware 32-bit destination,
+    /// keeping the destination's alpha. The plain pixel writer lerps toward
+    /// the cleared black and stamps full alpha, which turns a soft source
+    /// into a solid dark shape once the offscreen is drawn on the stage.
+    fn write_over_alpha(&mut self, dst_x: i32, dst_y: i32, (sr, sg, sb): (u8, u8, u8), sa_f: f32) {
+        if sa_f < 0.001 || dst_x < 0 || dst_y < 0 || dst_x >= self.width as i32 || dst_y >= self.height as i32 {
+            return;
+        }
+        let idx = (dst_y as usize * self.width as usize + dst_x as usize) * 4;
+        if idx + 3 >= self.data.len() {
+            return;
+        }
+        let dr = self.data[idx] as f32;
+        let dg = self.data[idx + 1] as f32;
+        let db = self.data[idx + 2] as f32;
+        let da = self.data[idx + 3] as f32 / 255.0;
+        let one_minus_sa = 1.0 - sa_f;
+        let out_a = sa_f + da * one_minus_sa;
+        if out_a < 0.001 {
+            self.data[idx + 3] = 0;
+            return;
+        }
+        let inv = 1.0 / out_a;
+        self.data[idx] = ((sr as f32 * sa_f + dr * da * one_minus_sa) * inv).clamp(0.0, 255.0) as u8;
+        self.data[idx + 1] = ((sg as f32 * sa_f + dg * da * one_minus_sa) * inv).clamp(0.0, 255.0) as u8;
+        self.data[idx + 2] = ((sb as f32 * sa_f + db * da * one_minus_sa) * inv).clamp(0.0, 255.0) as u8;
+        self.data[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+
     fn allows_colorize(depth: u8, ink: u32, is_text: bool) -> bool {
         if is_text {
             return true; // text has its own rules
@@ -2993,6 +3022,12 @@ impl Bitmap {
                     // so their color-key behavior is unchanged.
                     let src_a = if src.use_alpha { a as f32 / 255.0 } else { 1.0 };
                     let eff = src_a * alpha;
+                    // Into an alpha offscreen the source alpha is kept, as
+                    // copy and blend ink already do.
+                    if src.use_alpha && self.bit_depth == 32 && self.use_alpha && !params.is_text_rendering {
+                        self.write_over_alpha(dst_x, dst_y, src_color, eff);
+                        continue;
+                    }
                     let blended = if eff >= 0.999 {
                         src_color
                     } else {
@@ -3331,6 +3366,12 @@ impl Bitmap {
                     let dst_color =
                         if !dst_palette_cache.is_empty() { self.get_pixel_color_fast(dst_palette_cache.table(), dst_x as u16, dst_y as u16) } else { self.get_pixel_color(palettes, dst_x as u16, dst_y as u16) };
 
+                    // Into an alpha offscreen the source alpha is kept, as
+                    // copy and blend ink already do.
+                    if src.use_alpha && self.bit_depth == 32 && self.use_alpha {
+                        self.write_over_alpha(dst_x, dst_y, src_color, src_alpha * alpha);
+                        continue;
+                    }
                     let blended = if src_alpha >= 0.999 && alpha >= 0.999 {
                         src_color
                     } else {
