@@ -1829,7 +1829,12 @@ impl SoundChannel {
                 let state = ctx.state();
                 debug!("🎵 AudioContext state: {:?}", state);
 
-                if state == web_sys::AudioContextState::Suspended {
+                // A host that paused the movie suspended the context on
+                // purpose; a queued sound that starts from the previous
+                // one's end callback must wait for the host to resume it,
+                // or a line of speech played into the pause.
+                let host_paused = crate::player::USER_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+                if state == web_sys::AudioContextState::Suspended && !host_paused {
                     let resume_result = ctx.resume();
                     debug!("🎵 AudioContext resume result: {:?}", resume_result);
                 }

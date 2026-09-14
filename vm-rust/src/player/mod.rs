@@ -4571,6 +4571,11 @@ pub async fn wait_for_handler_gap() {
     }
 }
 
+/// Set while the host holds the movie with `set_paused`. Read from code
+/// that runs outside a player borrow, such as a sound starting from an
+/// audio callback, which must not wake an audio context the host suspended.
+pub static USER_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn reserve_player_mut<T, F>(callback: F) -> T
 where
     F: FnOnce(&mut DirPlayer) -> T,

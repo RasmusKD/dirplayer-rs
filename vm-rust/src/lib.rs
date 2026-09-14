@@ -379,6 +379,7 @@ pub fn play() {
 /// on unseen.
 #[wasm_bindgen]
 pub fn set_paused(paused: bool) {
+    crate::player::USER_PAUSED.store(paused, std::sync::atomic::Ordering::Relaxed);
     reserve_player_mut(|player| {
         player.is_user_paused = paused;
     });
