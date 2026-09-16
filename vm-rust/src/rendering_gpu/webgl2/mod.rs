@@ -1625,6 +1625,16 @@ impl WebGL2Renderer {
                 // Flash force above (Shockwave's 2D compositor ignores sprite blend on
                 // these special composited members).
                 blend = 100;
+            } else if matches!(member.member_type, CastMemberType::FilmLoop(_)) && blend > 0 && blend < 100 {
+                // A film loop is a composited member too, and Shockwave's 2D
+                // compositor ignores a partial sprite blend on it just as it
+                // does for Flash and Shockwave3D: the score can carry blend=50
+                // on a film-loop sprite yet Director draws it fully opaque
+                // (verified against the narrator film loop the score authors
+                // at blend=50 — Shockwave renders him solid, while applying the
+                // blend left him half see-through). blend=0 is left alone: a
+                // deliberately hidden layer, not a partial fade.
+                blend = 100;
             }
         }
 
