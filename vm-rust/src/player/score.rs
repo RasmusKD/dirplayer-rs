@@ -5656,6 +5656,22 @@ fn is_click_transparent_sprite(player: &DirPlayer, sprite: &Sprite) -> bool {
             }
         }
     }
+    // A Background Transparent (ink 36) bitmap with no mouse handler is a
+    // pure overlay drawn over other sprites, most often a custom pointer or
+    // aiming reticle that tracks the mouse. Its background shows through
+    // visually, so a click must reach whatever interactive sprite sits behind
+    // it, exactly as it does under the reticle's transparent centre. An ink-36
+    // sprite that DOES handle the mouse (a hotspot button drawn with a
+    // transparent background) keeps its clicks.
+    if sprite.ink == 36 && !sprite_has_mouse_handler(player, sprite) {
+        if let Some(member_ref) = sprite.member.as_ref() {
+            if let Some(member) = player.movie.cast_manager.find_member_by_ref(member_ref) {
+                if matches!(&member.member_type, CastMemberType::Bitmap(_)) {
+                    return true;
+                }
+            }
+        }
+    }
     // Check if it's a non-editable text or field member
     let is_non_editable_text_or_field = if let Some(member_ref) = sprite.member.as_ref() {
         if let Some(member) = player.movie.cast_manager.find_member_by_ref(member_ref) {
