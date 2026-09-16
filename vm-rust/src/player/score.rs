@@ -5022,9 +5022,25 @@ pub fn sprite_set_prop(sprite_id: i16, prop_name: Symbol, value: Datum) -> Resul
                         // Store the member ref to reset later
                         unsafe {
                             if let Some(player) = PLAYER_OPT.as_mut() {
+                                // A film loop's playhead lives on the member and is
+                                // shared by every sprite showing it. Resetting it to
+                                // frame 1 here is right for the FIRST sprite that
+                                // starts the loop, but wrong when another sprite is
+                                // already running it: several sprites share one
+                                // tumbling loop and each restarts on its own, so
+                                // one restart was snapping every sprite's rotation back
+                                // to the start. Only reset when no other sprite is
+                                // currently displaying this loop.
+                                let others_using = player.movie.score.channels.iter().any(|ch| {
+                                    ch.number as i16 != sprite_id
+                                        && ch.sprite.visible
+                                        && ch.sprite.member.as_ref() == Some(r)
+                                });
                                 if let Some(member) = player.movie.cast_manager.find_mut_member_by_ref(r) {
                                     if let CastMemberType::FilmLoop(film_loop) = &mut member.member_type {
-                                        film_loop.current_frame = 1;
+                                        if !others_using {
+                                            film_loop.current_frame = 1;
+                                        }
                                         film_loop.score.sound_channel_triggered.clear();
                                         film_loop.score.sound_span_started.clear();
                                         film_loop.score.last_sound_clear_frame = None;
