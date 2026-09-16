@@ -25,6 +25,57 @@ pub struct StringChunkUtils {}
 /// Out-of-range indices clamp to the string's byte length so the caller's
 /// "delete chars 100..200 of a 5-char string" still produces an empty
 /// range instead of panicking.
+/// Rewrite the concatenated text of `spans` from `old_text` to `new_text`,
+/// preserving the style of every run outside the changed region. The changed
+/// run (found by common prefix/suffix diff) takes the style that already
+/// covered its first character, so replacing one line's text keeps that line's
+/// own weight instead of collapsing the member to its first run's style.
+fn rewrite_span_text(spans: &[StyledSpan], old_text: &str, new_text: &str) -> Vec<StyledSpan> {
+    let oc: Vec<char> = old_text.chars().collect();
+    let nc: Vec<char> = new_text.chars().collect();
+    let max_pre = oc.len().min(nc.len());
+    let mut p = 0usize;
+    while p < max_pre && oc[p] == nc[p] { p += 1; }
+    let mut suf = 0usize;
+    while suf < (max_pre - p) && oc[oc.len() - 1 - suf] == nc[nc.len() - 1 - suf] { suf += 1; }
+    let prefix_bytes: usize = oc[..p].iter().map(|c| c.len_utf8()).sum();
+    let old_suffix_start_char = oc.len() - suf;
+    let suffix_start_byte: usize = oc[..old_suffix_start_char].iter().map(|c| c.len_utf8()).sum();
+    let repl: String = nc[p..nc.len() - suf].iter().collect();
+    // Style covering the first changed character (or the last kept run).
+    let mut off = 0usize;
+    let mut cut_style = spans.first().map(|s| s.style.clone()).unwrap_or_default();
+    for sp in spans {
+        let e = off + sp.text.len();
+        if off <= prefix_bytes && prefix_bytes < e { cut_style = sp.style.clone(); break; }
+        if e <= prefix_bytes { cut_style = sp.style.clone(); }
+        off = e;
+    }
+    let mut out: Vec<StyledSpan> = Vec::new();
+    // Retained prefix runs.
+    off = 0;
+    for sp in spans {
+        let e = off + sp.text.len();
+        if off < prefix_bytes {
+            let take = prefix_bytes.min(e) - off;
+            if take > 0 { out.push(StyledSpan { text: sp.text[..take].to_string(), style: sp.style.clone() }); }
+        }
+        off = e;
+    }
+    if !repl.is_empty() { out.push(StyledSpan { text: repl, style: cut_style }); }
+    // Retained suffix runs.
+    off = 0;
+    for sp in spans {
+        let e = off + sp.text.len();
+        if e > suffix_start_byte {
+            let from = suffix_start_byte.max(off) - off;
+            if from < sp.text.len() { out.push(StyledSpan { text: sp.text[from..].to_string(), style: sp.style.clone() }); }
+        }
+        off = e;
+    }
+    out
+}
+
 pub(crate) fn char_range_to_byte_range(s: &str, char_start: usize, char_end: usize) -> (usize, usize) {
     if char_start >= char_end {
         // Caller already handles the "empty range" case for ranges that
@@ -129,19 +180,29 @@ impl StringChunkUtils {
                 match member {
                     CastMemberType::Field(field) => field.set_text_preserving_caret(new_string),
                     CastMemberType::Text(member) => {
-                        member.set_text_preserving_caret(new_string);
-                        // Same cleanup the plain `.text` setter does. The
-                        // renderer prefers html_styled_spans when present, so
-                        // leaving the old spans in place kept drawing the
-                        // PREVIOUS content: the measured movie localises its labels
-                        // with `member("Label").line[1] = "..."`,
-                        // and the screen went on showing the cast's English
-                        // "Mayor's house" while the member held Danish text.
-                        // Clearing lets the next render synthesise spans from
-                        // the new text; that movie applies chunk styles after
-                        // writing content, so nothing it sets is lost.
-                        member.html_styled_spans.clear();
-                        member.text_set_at_runtime = true;
+                        // Rewriting part of a text member (a script localising
+                        // one line: `member("Label").line[1] = "..."`)
+                        // must update the content AND keep every other run's
+                        // style. Clearing the spans fixed stale content but
+                        // dropped all character styles, so a member whose first
+                        // line is bold and the rest regular (a map tooltip:
+                        // bold name over a plain subtitle) rendered wholly bold
+                        // from the member's single fallback font_style. Diff the
+                        // old and new text and rewrite only the changed run,
+                        // giving it the style that region already had.
+                        let old_text = member.text.clone();
+                        if member.html_styled_spans.is_empty() || old_text == new_string {
+                            member.set_text_preserving_caret(new_string);
+                            if member.html_styled_spans.is_empty() {
+                                member.html_styled_spans.clear();
+                            }
+                            member.text_set_at_runtime = true;
+                        } else {
+                            let new_spans = rewrite_span_text(&member.html_styled_spans, &old_text, &new_string);
+                            member.set_text_preserving_caret(new_string);
+                            member.html_styled_spans = new_spans;
+                            member.text_set_at_runtime = true;
+                        }
                     }
                     _ => {
                         return Err(ScriptError::new(
