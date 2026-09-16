@@ -3810,6 +3810,13 @@ impl Bitmap {
                 let mut line_start = para_start;
                 let mut line_w: i32 = 0;
                 let mut last_space: Option<usize> = None;
+                // Director offers a line break after a hyphen as well as at
+                // a space: it splits a long hyphenated word to fill the
+                // line, where a space-only wrap would push the whole word
+                // down and spill an extra line past a fixed-height field.
+                // The space is dropped at the break; the hyphen stays on the
+                // line before it.
+                let mut last_hyphen: Option<usize> = None;
 
                 // Walk Unicode chars (via char_indices for byte positions)
                 // rather than raw UTF-8 bytes. Bytes-based iteration both
@@ -3829,28 +3836,44 @@ impl Bitmap {
                     }
 
                     if line_w + cw > max_width && p > line_start {
-                        if let Some(sp) = last_space.filter(|&sp| sp > line_start) {
+                        // Prefer the break point nearer the wrap edge. A
+                        // space at sp ends the line at sp (dropped, next
+                        // line starts at sp + 1). A hyphen at h ends the
+                        // line at h + 1 (kept, next line also at h + 1).
+                        // Both ' ' and '-' are ASCII, so the byte offsets
+                        // land on char boundaries.
+                        let space_brk = last_space.filter(|&sp| sp > line_start).map(|sp| (sp, sp + 1));
+                        let hyphen_brk = last_hyphen.filter(|&h| h >= line_start).map(|h| (h + 1, h + 1));
+                        let brk = match (space_brk, hyphen_brk) {
+                            (Some(sb), Some(hb)) => Some(if hb.0 > sb.0 { hb } else { sb }),
+                            (Some(sb), None) => Some(sb),
+                            (None, Some(hb)) => Some(hb),
+                            (None, None) => None,
+                        };
+                        if let Some((end, next_start)) = brk {
                             lines.push(LineSpan {
                                 start: line_start,
-                                end: sp,
-                                text: text[line_start..sp].to_string(),
+                                end,
+                                text: text[line_start..end].to_string(),
                             });
-                            // ' ' is ASCII so sp + 1 is always a char
-                            // boundary.
-                            line_start = sp + 1;
+                            line_start = next_start;
                             last_space = None;
+                            last_hyphen = None;
                             // If the wrap point IS the current char (the
                             // overflowing one), skip it without counting
                             // its width on the new line.
                             if line_start > p {
                                 line_w = 0;
+                                if ch == '-' {
+                                    last_hyphen = Some(p);
+                                }
                                 continue;
                             }
                             // Re-accumulate glyph advances for the chars
                             // that now form the start of the new line.
                             line_w = text[line_start..p]
                                 .chars()
-                                .map(|c| font.get_char_advance(c as u8) as i32)
+                                .map(|c| font.get_char_advance_for(c) as i32)
                                 .sum();
                         } else {
                             #[cfg(feature = "word_hard_break")]
@@ -3867,6 +3890,9 @@ impl Bitmap {
                         }
                     }
 
+                    if ch == '-' {
+                        last_hyphen = Some(p);
+                    }
                     line_w += cw;
                 }
 
