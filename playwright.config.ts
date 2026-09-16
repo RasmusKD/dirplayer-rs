@@ -11,6 +11,10 @@ export default defineConfig({
     headless: !!process.env.CI,
     baseURL: "http://127.0.0.1:9101",
     video: process.env.CI ? "on" : "off",
+    // Always silence the client's audio during e2e runs.
+    launchOptions: {
+      args: ["--mute-audio"],
+    },
   },
   webServer: {
     command: "node scripts/serve-browser-runner.mjs",
