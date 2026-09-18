@@ -3485,7 +3485,14 @@ impl Bitmap {
                 // sprite blend. Through set_pixel_fast the source was lerped
                 // toward the cleared black offscreen and stamped opaque, so
                 // a soft grey plume in a film loop came out as solid black.
-                let alpha_source_copy = ink == 0 && src.original_bit_depth == 32 && src.use_alpha;
+                //
+                // Transparent ink (1) on such a source is the same case: the
+                // stage path draws it as an alpha copy, and the projector
+                // shows the bitmap's own soft edges. A film loop whose last
+                // frame holds a semi-transparent impact flash with ink 1 fell
+                // through to blend_pixel here and came out as an opaque black
+                // blob for as long as the loop sat on that frame.
+                let alpha_source_copy = (ink == 0 || ink == 1) && src.original_bit_depth == 32 && src.use_alpha;
                 if !params.is_text_rendering && (ink == 32 || alpha_source_copy)
                     && self.bit_depth == 32 && self.use_alpha
                 {
