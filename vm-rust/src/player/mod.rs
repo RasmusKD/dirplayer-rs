@@ -557,6 +557,19 @@ pub struct DirPlayer {
     /// `run_single_frame` treats it as "stop processing this frame" so no
     /// event reaches the new movie's scripts before prepareMovie.
     pub pending_movie_init: bool,
+    /// Set once `run_movie_init_sequence` has delivered the starting frame's
+    /// own events (prepareFrame, enterFrame, exitFrame). The first
+    /// `run_single_frame` after that must not deliver them again: it consumes
+    /// the flag, skips the frame update and the exitFrame dispatch, and goes
+    /// straight to the advance, honouring any go() the init exitFrame made.
+    ///
+    /// Without this every movie's starting frame was visited twice, once by
+    /// the init sequence and once by the first tick. Measured on a task
+    /// movie whose frame 1 exitFrame picks a random weight, shows the text
+    /// sprite for it and starts the narration: the second visit picked a
+    /// second weight and showed a second sprite on top of the first, while
+    /// the projector shows one.
+    pub initial_frame_events_delivered: bool,
     /// Cast libraries of movies replaced by an eager mid-handler `go(frame,
     /// movie)` mount. The suspended caller's trampoline frames hold raw
     /// pointers into these (script Rc contents, `name_symbols`), so they must
@@ -858,6 +871,7 @@ impl DirPlayer {
             pending_goto_net_movie: None,
             goto_wait_active: false,
             pending_movie_init: false,
+            initial_frame_events_delivered: false,
             retired_cast_libs: Vec::new(),
             movie_mount_generation: 0,
             pending_restart: false,
@@ -2002,6 +2016,7 @@ impl DirPlayer {
         self.pending_goto_net_movie = None;
         self.goto_wait_active = false;
         self.pending_movie_init = false;
+        self.initial_frame_events_delivered = false;
         self.retired_cast_libs.clear();
         self.pending_restart = false;
 
@@ -5793,6 +5808,9 @@ async fn run_movie_init_sequence() {
 
     reserve_player_mut(|player| {
         player.is_in_frame_update = false;
+        // The starting frame has now had prepareFrame, enterFrame and
+        // exitFrame. The first frame tick continues from the advance.
+        player.initial_frame_events_delivered = true;
     });
 
     // `--go N`, last: the movie's own prepareMovie / startMovie / exitFrame have
@@ -6157,7 +6175,11 @@ pub async fn run_single_frame() -> (bool, bool) {
     stream_status::dispatch_pending_stream_status().await;
 
     // --- Phase 1: Execute frame scripts ---
-    if !is_script_paused {
+    // Skipped on the first tick after a movie's init sequence: that sequence
+    // already ran the starting frame's prepareFrame and enterFrame.
+    let initial_frame_delivered =
+        reserve_player_ref(|player| player.initial_frame_events_delivered);
+    if !is_script_paused && !initial_frame_delivered {
         player_wait_available().await;
 
         let skip_frame = reserve_player_ref(|player| player.command_handler_yielding || player.in_mouse_command);
@@ -6248,20 +6270,32 @@ pub async fn run_single_frame() -> (bool, bool) {
 
     player_wait_available().await;
 
-    // Relay exitFrame to timeout targets
-    dispatch_system_event_to_timeouts(BuiltInSymbol::ExitFrame, &vec![]).await;
+    // The starting frame's exitFrame was delivered by the init sequence.
+    // Consume the flag and keep whatever go() that exitFrame recorded:
+    // clearing go_same_frame here would turn a `go the frame` hold on the
+    // first frame into an advance.
+    let initial_frame_delivered = reserve_player_mut(|player| {
+        std::mem::replace(&mut player.initial_frame_events_delivered, false)
+    });
 
-    // Eager movie mount during a timeout's exitFrame: stop this frame cycle.
-    if reserve_player_ref(|player| player.pending_movie_init) {
-        return (is_playing, is_script_paused);
+    if !initial_frame_delivered {
+        // Relay exitFrame to timeout targets
+        dispatch_system_event_to_timeouts(BuiltInSymbol::ExitFrame, &vec![]).await;
+
+        // Eager movie mount during a timeout's exitFrame: stop this frame cycle.
+        if reserve_player_ref(|player| player.pending_movie_init) {
+            return (is_playing, is_script_paused);
+        }
     }
 
     let mut stayed_on_same_frame = false;
 
-    // Clear stale go_same_frame from previous frame's processing
-    reserve_player_mut(|player| {
-        player.go_same_frame = false;
-    });
+    if !initial_frame_delivered {
+        // Clear stale go_same_frame from previous frame's processing
+        reserve_player_mut(|player| {
+            player.go_same_frame = false;
+        });
+    }
 
     if has_player_frame_changed {
         player_wait_available().await;
@@ -6307,7 +6341,9 @@ pub async fn run_single_frame() -> (bool, bool) {
     } else {
         player_wait_available().await;
 
-        dispatch_event_to_all_behaviors(Symbol::builtin(BuiltInSymbol::ExitFrame), &vec![]).await;
+        if !initial_frame_delivered {
+            dispatch_event_to_all_behaviors(Symbol::builtin(BuiltInSymbol::ExitFrame), &vec![]).await;
+        }
 
         player_wait_available().await;
 
