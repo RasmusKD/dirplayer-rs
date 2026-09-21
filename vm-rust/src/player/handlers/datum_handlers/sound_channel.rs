@@ -474,6 +474,14 @@ impl SoundChannelDatumHandlers {
             let mut ch = channel_rc.borrow_mut();
             ch.loop_count = loop_count;
             ch.loops_remaining = loop_count;
+            // A new sound replaces the channel's queue, as play(member) does
+            // above. Left in place, the queue resumed when the new sound
+            // ended: a narration that queued ten spoken numbers and then
+            // moved on with puppetSound heard the rest of the numbers come
+            // back in the middle of its next line.
+            ch.playlist_segments.clear();
+            ch.playlist.clear();
+            ch.current_segment_index = None;
         }
 
         // Call the associated function with the Rc
@@ -4275,7 +4283,20 @@ impl SoundChannel {
                 return;
             }
             
-            ch.status = SoundStatus::Idle;
+            // Idle only when nothing follows. With a queue or a loop still
+            // to play the channel stays busy through the hand-over, so a
+            // script that waits for `isBusy() = 0` between spoken clips
+            // never sees the channel free while the next clip is decoded.
+            let more = !ch.queued_members.is_empty()
+                || match ch.current_segment_index {
+                    // Direct playback: its own loops, then any playlist.
+                    None => ch.loop_count == 0 || ch.loops_remaining > 1 || !ch.playlist_segments.is_empty(),
+                    // Playlist: this segment's loops, then a following segment.
+                    Some(i) => ch.playlist_segments.get(i).map_or(false, |seg| {
+                        seg.loop_count == 0 || seg.loops_remaining > 1 || i + 1 < ch.playlist_segments.len()
+                    }),
+                };
+            ch.status = if more { SoundStatus::Loading } else { SoundStatus::Idle };
             ch.source_node = None;
             ch.start_next_segment();
         } else {
