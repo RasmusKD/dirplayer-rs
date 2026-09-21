@@ -517,6 +517,9 @@ impl WebGL2Renderer {
         if let Some(ref loc) = program.u_floor_rule {
             gl.uniform1f(Some(loc), 0.0);
         }
+        if let Some(ref loc) = program.u_stage_scale {
+            gl.uniform2f(Some(loc), 1.0, 1.0);
+        }
         if let Some(ref loc) = program.u_skew {
             gl.uniform1f(Some(loc), 0.0);
         }
@@ -596,6 +599,9 @@ impl WebGL2Renderer {
         }
         if let Some(ref loc) = program.u_floor_rule {
             gl.uniform1f(Some(loc), 0.0);
+        }
+        if let Some(ref loc) = program.u_stage_scale {
+            gl.uniform2f(Some(loc), 1.0, 1.0);
         }
         if let Some(ref loc) = program.u_skew {
             gl.uniform1f(Some(loc), 0.0);
@@ -687,6 +693,9 @@ impl WebGL2Renderer {
         }
         if let Some(ref loc) = program.u_floor_rule {
             gl.uniform1f(Some(loc), 0.0);
+        }
+        if let Some(ref loc) = program.u_stage_scale {
+            gl.uniform2f(Some(loc), 1.0, 1.0);
         }
         if let Some(ref loc) = program.u_skew {
             gl.uniform1f(Some(loc), 0.0);
@@ -1300,6 +1309,9 @@ impl WebGL2Renderer {
         }
         if let Some(ref loc) = program.u_floor_rule {
             gl.uniform1f(Some(loc), 0.0);
+        }
+        if let Some(ref loc) = program.u_stage_scale {
+            gl.uniform2f(Some(loc), 1.0, 1.0);
         }
         if let Some(ref loc) = program.u_skew {
             gl.uniform1f(Some(loc), 0.0);
@@ -4620,6 +4632,19 @@ impl WebGL2Renderer {
         }
         if let Some(ref loc) = program.u_floor_rule {
             gl.uniform1f(Some(loc), if floor_rule { 1.0 } else { 0.0 });
+        }
+        // A stage drawn larger than the movie rect (swStretchStyle) scales
+        // every sprite rect, and the text, shape and film-loop textures are
+        // rasterised at that size. An authored bitmap is not: its texture
+        // holds movie pixels, and the shader mixes them per device pixel so
+        // it looks as the 1:1 stage does when the browser scales it up.
+        if let Some(ref loc) = program.u_stage_scale {
+            let (ssx, ssy) = if floor_rule {
+                crate::player::stage::stage_scale(player)
+            } else {
+                (1.0, 1.0)
+            };
+            gl.uniform2f(Some(loc), ssx as f32, ssy as f32);
         }
 
         // Continuous skew (`the skew of sprite`) — applied as a horizontal
