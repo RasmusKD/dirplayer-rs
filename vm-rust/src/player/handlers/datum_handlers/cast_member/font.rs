@@ -686,10 +686,15 @@ impl FontMemberHandlers {
         // Scale the context so text renders at 2x resolution
         let _ = ctx.scale(scale_factor as f64, scale_factor as f64);
 
-        // Render WHITE text on BLACK background to measure pure coverage.
-        // This avoids color-dependent anti-aliasing artifacts from Canvas2D.
-        // Coverage is then mapped to the bitmap as: black text on white background.
-        ctx.set_fill_style_str("rgb(0,0,0)");
+        // Render BLACK text on WHITE and read coverage as 255 - luminance.
+        // The browser's rasteriser shapes a glyph mask by the colour it draws
+        // with: light text on a dark ground gets a contrast boost that makes
+        // its stems heavier, and at 16 px it made a regular face carry the
+        // same ink as its bold cut (measured on a Comic Sans MS tooltip:
+        // regular 728 to bold 718 white-on-black, 621 to 646 black-on-white,
+        // and the projector's rendering of the same lines has 571 to 593).
+        // Dark on light is the mask closest to plain geometric coverage.
+        ctx.set_fill_style_str("rgb(255,255,255)");
         ctx.fill_rect(0.0, 0.0, render_width.max(1) as f64, render_height.max(1) as f64);
 
         // Apply the vertical origin during LAYOUT rather than when blitting the
@@ -1102,8 +1107,8 @@ impl FontMemberHandlers {
                 }
 
                 ctx.set_font(&segment.style.font);
-                // Always render in WHITE on the black canvas for coverage measurement
-                ctx.set_fill_style_str("rgb(255,255,255)");
+                // Always black on the white canvas: coverage, not colour.
+                ctx.set_fill_style_str("rgb(0,0,0)");
                 let _ = ctx.fill_text(&segment.text, x, y);
 
                 // Record this segment's color region for per-run color lookup
@@ -1133,7 +1138,7 @@ impl FontMemberHandlers {
                     ctx.begin_path();
                     ctx.move_to(x, underline_y);
                     ctx.line_to(x + segment.width, underline_y);
-                    ctx.set_stroke_style_str("rgb(255,255,255)");
+                    ctx.set_stroke_style_str("rgb(0,0,0)");
                     ctx.stroke();
                 }
 
@@ -1196,7 +1201,7 @@ impl FontMemberHandlers {
 
         let pixels = image_data.data();
 
-        // Debug: check raw canvas pixels for non-black (text) content.
+        // Debug: check raw canvas pixels for non-white (text) content.
         // Gated on the log level: this scans every canvas pixel of every text
         // sprite on every frame, which is pure waste when nothing consumes the
         // output.
@@ -1210,7 +1215,7 @@ impl FontMemberHandlers {
                     let r = pixels[idx];
                     let g = pixels[idx + 1];
                     let b = pixels[idx + 2];
-                    if r > 0 || g > 0 || b > 0 {
+                    if r < 255 || g < 255 || b < 255 {
                         nonblack += 1;
                         if first_nb.is_empty() {
                             let x = i % canvas_width as usize;
@@ -1235,9 +1240,8 @@ impl FontMemberHandlers {
             );
         }
 
-        // Downscale 2x canvas (white-on-black) to 1x bitmap (black-on-white).
-        // Coverage = average luminance of sf×sf block. Then invert: output = 255 - coverage.
-        // This gives black text body on white background with proper anti-aliasing.
+        // Downscale the 2x canvas (black on white) to the 1x bitmap.
+        // Coverage = 255 - average luminance of the sf×sf block.
         let out_w = render_width.max(1) as usize;
         let out_h = render_height.max(1) as usize;
         let sf = scale_factor as usize;
@@ -1255,7 +1259,7 @@ impl FontMemberHandlers {
                     continue;
                 }
 
-                // Average luminance of the sf×sf pixel block (white text on black bg)
+                // Average luminance of the sf×sf pixel block (black text on white)
                 let mut lum_sum = 0u32;
                 let count = (sf * sf) as u32;
                 for sy in 0..sf {
@@ -1269,7 +1273,7 @@ impl FontMemberHandlers {
                         }
                     }
                 }
-                let coverage = (lum_sum / count) as u8; // 0=background, 255=text body
+                let coverage = 255 - (lum_sum / count) as u8; // 0=background, 255=text body
 
                 // Only write pixels where text was actually rendered (coverage > 0).
                 // Background pixels stay at the bitmap's pre-fill (transparent for text.image).
