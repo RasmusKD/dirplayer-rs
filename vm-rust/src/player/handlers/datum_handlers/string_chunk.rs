@@ -30,6 +30,22 @@ pub struct StringChunkUtils {}
 /// run (found by common prefix/suffix diff) takes the style that already
 /// covered its first character, so replacing one line's text keeps that line's
 /// own weight instead of collapsing the member to its first run's style.
+/// The line break this text already uses. Rebuilding a line range has to put
+/// the text back together with the breaks it came with: a member authored
+/// with CR breaks that came back with CRLF grew by one byte per line, which
+/// moved every later character and left the member's style runs describing
+/// the wrong range.
+fn line_break_of(text: &str) -> &'static str {
+    if text.contains("\r\n") {
+        "\r\n"
+    } else if text.contains('\r') {
+        "\r"
+    } else if text.contains('\n') {
+        "\n"
+    } else {
+        "\r"
+    }
+}
 fn rewrite_span_text(spans: &[StyledSpan], old_text: &str, new_text: &str) -> Vec<StyledSpan> {
     let oc: Vec<char> = old_text.chars().collect();
     let nc: Vec<char> = new_text.chars().collect();
@@ -293,7 +309,7 @@ impl StringChunkUtils {
 
                 let mut new_chunks = chunk_list;
                 new_chunks.drain(start..end);
-                Ok(new_chunks.join("\r\n"))
+                Ok(new_chunks.join(line_break_of(string)))
             },
         }
     }
@@ -467,7 +483,7 @@ impl StringChunkUtils {
                 if chunk_list.len() == 0 {
                     return Ok("".to_string());
                 }
-                chunk_list[start..end].join("\r\n")
+                chunk_list[start..end].join(line_break_of(string))
             }
         };
 
@@ -512,7 +528,7 @@ impl StringChunkUtils {
                 let delimiter = match chunk_expr.chunk_type {
                     StringChunkType::Item => chunk_expr.item_delimiter.to_string(),
                     StringChunkType::Word => " ".to_string(),
-                    StringChunkType::Line => "\r\n".to_string(),
+                    StringChunkType::Line => line_break_of(string).to_string(),
                     _ => unreachable!(),
                 };
                 Ok(new_chunks.join(&delimiter))
@@ -563,7 +579,7 @@ impl StringChunkUtils {
                 let delimiter = match chunk_expr.chunk_type {
                     StringChunkType::Item => chunk_expr.item_delimiter.to_string(),
                     StringChunkType::Word => " ".to_string(),
-                    StringChunkType::Line => "\r\n".to_string(),
+                    StringChunkType::Line => line_break_of(string).to_string(),
                     _ => unreachable!(),
                 };
                 Ok(new_chunks.join(&delimiter))
@@ -615,7 +631,7 @@ impl StringChunkUtils {
                 let delimiter = match chunk_expr.chunk_type {
                     StringChunkType::Item => chunk_expr.item_delimiter.to_string(),
                     StringChunkType::Word => " ".to_string(),
-                    StringChunkType::Line => "\r\n".to_string(),
+                    StringChunkType::Line => line_break_of(string).to_string(),
                     _ => unreachable!(),
                 };
                 Ok(new_chunks.join(&delimiter))
@@ -1470,6 +1486,107 @@ mod tests {
             item_delimiter: ',',
         };
         StringChunkUtils::resolve_chunk_expr_string(s, &expr).unwrap()
+    }
+
+    fn spans(v: &[(&str, bool)]) -> Vec<StyledSpan> {
+        v.iter()
+            .map(|(t, b)| {
+                let mut style = crate::player::handlers::datum_handlers::cast_member::font::HtmlStyle::default();
+                style.bold = *b;
+                StyledSpan { text: t.to_string(), style }
+            })
+            .collect()
+    }
+
+    fn runs(v: &[StyledSpan]) -> Vec<(String, bool)> {
+        let mut out: Vec<(String, bool)> = Vec::new();
+        for sp in v {
+            match out.last_mut() {
+                Some(last) if last.1 == sp.style.bold => last.0.push_str(&sp.text),
+                _ => out.push((sp.text.clone(), sp.style.bold)),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn line_write_keeps_the_break_style() {
+        // Rebuilding the text has to reuse the break the member came with.
+        // Returning CRLF for a CR member added a byte per line, so the style
+        // runs (which keep the original text) described the wrong range and
+        // the weight of a later line came out wrong.
+        let expr = StringChunkExpr {
+            chunk_type: StringChunkType::Line,
+            start: 1,
+            end: 1,
+            item_delimiter: ',',
+        };
+        for (text, want) in [
+            ("one\rtwo\rthree", "ONE\rtwo\rthree"),
+            ("one\r\ntwo", "ONE\r\ntwo"),
+            ("one\ntwo", "ONE\ntwo"),
+        ] {
+            assert_eq!(
+                StringChunkUtils::string_by_putting_into_chunk(text, &expr, "ONE").unwrap(),
+                want
+            );
+        }
+    }
+
+    #[test]
+    fn span_rewrite_keeps_every_character() {
+        // The rewrite must always hand back exactly the new text. When it
+        // did not, the spans drifted shorter than the member's text and the
+        // next write found nothing to keep, so the member fell back to its
+        // member-wide style: a tooltip whose name alone is bold went wholly
+        // bold once the map updated its progress line.
+        let mut v = spans(&[("The asteroid belt", true), ("\r(mixed and decimal numbers)\r0/6", false)]);
+        let mut text = "The asteroid belt\r(mixed and decimal numbers)\r0/6".to_string();
+        for next in [
+            "Asteroide-b\u{e6}ltet\r(mixed and decimal numbers)\r0/6",
+            "Asteroide-b\u{e6}ltet\r(blandede/decimal-tal)\r0/6",
+            "Asteroide-b\u{e6}ltet\r(blandede/decimal-tal)\r0/6",
+            "Asteroide-b\u{e6}ltet\r(blandede/decimal-tal)\r3/6",
+            "Asteroide-b\u{e6}ltet\r(blandede/decimal-tal)\r3/6",
+        ] {
+            v = rewrite_span_text(&v, &text, next);
+            text = next.to_string();
+            let joined: String = v.iter().map(|s| s.text.as_str()).collect();
+            assert_eq!(joined, text, "spans must spell out the member's text");
+            assert_eq!(runs(&v)[0].1, true, "the name stays bold");
+            assert_eq!(runs(&v).len(), 2, "name bold, the rest regular");
+        }
+    }
+
+    #[test]
+    fn line_write_keeps_the_other_lines_weight() {
+        // A map tooltip: bold name, regular subtitle and progress. The
+        // localisation rewrites line 1 and then line 2; both writes must
+        // leave the regular lines regular.
+        let name_da = "Asteroide-b\u{e6}ltet";
+        let mut v = spans(&[("The asteroid belt", true), ("\r(mixed and decimal numbers)\r0/6", false)]);
+        let mut text = "The asteroid belt\r(mixed and decimal numbers)\r0/6".to_string();
+
+        let next = format!("{}\r(mixed and decimal numbers)\r0/6", name_da);
+        v = rewrite_span_text(&v, &text, &next);
+        text = next;
+        assert_eq!(
+            runs(&v),
+            vec![
+                (name_da.to_string(), true),
+                ("\r(mixed and decimal numbers)\r0/6".to_string(), false),
+            ]
+        );
+
+        let next = format!("{}\r(blandede/decimal-tal)\r0/6", name_da);
+        v = rewrite_span_text(&v, &text, &next);
+        assert_eq!(
+            runs(&v),
+            vec![
+                (name_da.to_string(), true),
+                ("\r(blandede/decimal-tal)\r0/6".to_string(), false),
+            ]
+        );
     }
 
     #[test]
