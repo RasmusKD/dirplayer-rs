@@ -3767,7 +3767,24 @@ impl SoundChannel {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.status != SoundStatus::Idle
+        self.status != SoundStatus::Idle || self.has_pending_sound()
+    }
+
+    /// Something is still to play after the current clip: a queued member,
+    /// a remaining loop or a later playlist segment. A channel with that is
+    /// busy even while no source is running, because the next clip is being
+    /// decoded. Measured on a narration that queues ten spoken numbers: on a
+    /// slower machine the decode of the next number outlasted the movie's
+    /// 300 ms grace, the channel read as free between two numbers, and the
+    /// movie went on to its next line after the first number.
+    pub fn has_pending_sound(&self) -> bool {
+        !self.queued_members.is_empty()
+            || match self.current_segment_index {
+                None => !self.playlist_segments.is_empty(),
+                Some(i) => self.playlist_segments.get(i).map_or(false, |seg| {
+                    seg.loop_count == 0 || seg.loops_remaining > 1 || i + 1 < self.playlist_segments.len()
+                }),
+            }
     }
 
     pub fn set_loop_count(&mut self, count: i32) {
@@ -4287,16 +4304,13 @@ impl SoundChannel {
             // to play the channel stays busy through the hand-over, so a
             // script that waits for `isBusy() = 0` between spoken clips
             // never sees the channel free while the next clip is decoded.
-            let more = !ch.queued_members.is_empty()
-                || match ch.current_segment_index {
-                    // Direct playback: its own loops, then any playlist.
-                    None => ch.loop_count == 0 || ch.loops_remaining > 1 || !ch.playlist_segments.is_empty(),
-                    // Playlist: this segment's loops, then a following segment.
-                    Some(i) => ch.playlist_segments.get(i).map_or(false, |seg| {
-                        seg.loop_count == 0 || seg.loops_remaining > 1 || i + 1 < ch.playlist_segments.len()
-                    }),
-                };
+            let more = ch.has_pending_sound()
+                || (ch.current_segment_index.is_none() && (ch.loop_count == 0 || ch.loops_remaining > 1));
             ch.status = if more { SoundStatus::Loading } else { SoundStatus::Idle };
+            if more {
+                // Loading is timed from here, not from the clip that ended.
+                ch.playback_start_context_time = ch.context_time();
+            }
             ch.source_node = None;
             ch.start_next_segment();
         } else {
