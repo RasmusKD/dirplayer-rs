@@ -314,6 +314,10 @@ pub struct DirPlayer {
     pub ime_composition: Option<(i32, i32)>,
     pub mouse_loc: (i32, i32),
     pub wants_pointer_lock: bool,
+    /// Matte shapes for hit-testing, keyed by bitmap and its version. The
+    /// WebGL renderer bakes the matte into its texture and never stores it
+    /// on the bitmap, so a matte-ink sprite's hit test builds it here once.
+    pub hit_matte_cache: std::cell::RefCell<std::collections::HashMap<u32, (u32, std::sync::Arc<crate::player::bitmap::mask::BitmapMask>)>>,
     pub cursor_is_hidden: bool,
     /// Track parent DatumRef for chained property access (transform.position.z = value)
     /// (vector DatumRef, parent transform DatumRef, sub-property name)
@@ -785,6 +789,7 @@ impl DirPlayer {
             keyboard_focus_sprite: -1, // Setting keyboardFocusSprite to -1 returns keyboard focus control to the Score, and setting it to 0 disables keyboard entry into any editable sprite.
             mouse_loc: (0, 0),
             wants_pointer_lock: false,
+            hit_matte_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             cursor_is_hidden: false,
             transform_sub_refs: Vec::new(),
             last_mouse_down_time: 0,

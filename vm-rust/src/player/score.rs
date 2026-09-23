@@ -5536,9 +5536,24 @@ fn matte_pixel_hit_test(player: &DirPlayer, sprite: &Sprite, rect: &IntRect, hit
         Some(b) => b,
         None => return true,
     };
+    // The CPU renderer stores the matte on the bitmap; the WebGL renderer
+    // only bakes it into its texture. Without one here the hit test used to
+    // fall back to the bounding box, so a matte sprite answered the mouse
+    // over its whole rectangle instead of its shape.
     let matte = match bitmap.matte.as_ref() {
-        Some(m) => m,
-        None => return true, // Matte not yet computed, fall back to bounding box
+        Some(m) => m.clone(),
+        None => {
+            let key = bmp_member.image_ref as u32;
+            let mut cache = player.hit_matte_cache.borrow_mut();
+            match cache.get(&key) {
+                Some((version, m)) if *version == bitmap.version => m.clone(),
+                _ => {
+                    let m = Arc::new(bitmap.compute_matte(&player.movie.cast_manager.palettes()));
+                    cache.insert(key, (bitmap.version, m.clone()));
+                    m
+                }
+            }
+        }
     };
 
     let rect_w = (rect.right - rect.left).max(1);
