@@ -4671,7 +4671,23 @@ impl WebGL2Renderer {
 
         // Set rotation center (sprite's registration point: loc_h, loc_v)
         if let Some(ref loc) = u_rotation_center {
-            gl.uniform2f(Some(loc), raw_loc.0 as f32, raw_loc.1 as f32);
+            // The pivot is the sprite's loc, in the same space as the sprite
+            // rect. On a stage drawn larger than the movie rect
+            // (swStretchStyle) the rect is scaled into device pixels, so the
+            // loc has to be too; left in movie pixels the pivot sat off the
+            // sprite by the scale factor and a small rotation swung the
+            // whole sprite sideways and up or down.
+            let (sx, sy) = crate::player::stage::stage_scale(player);
+            let (px, py) = if (sx - 1.0).abs() < 1e-6 && (sy - 1.0).abs() < 1e-6 {
+                (raw_loc.0 as f64, raw_loc.1 as f64)
+            } else {
+                let layout = crate::player::stage::stage_layout(player);
+                (
+                    layout.draw_rect[0] + raw_loc.0 as f64 * sx,
+                    layout.draw_rect[1] + raw_loc.1 as f64 * sy,
+                )
+            };
+            gl.uniform2f(Some(loc), px as f32, py as f32);
         }
 
         // Set blend (0-100 -> 0.0-1.0)
