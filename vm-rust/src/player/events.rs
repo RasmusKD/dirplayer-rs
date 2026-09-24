@@ -108,9 +108,13 @@ pub fn player_dispatch_event_to_sprite(
 /// so with mouseWithin only on movement, a click on a stationary cursor was
 /// never seen.
 ///
-/// Only the front-most sprite under the pointer is hovered, as in Director,
-/// where these events follow `the rollover`: a sprite covered by another does
-/// not see the pointer at all. Sending them to every overlapping sprite that
+/// Only the front-most active sprite under the pointer is hovered, as in
+/// Director, where mouse events go to active sprites (ones with a sprite or
+/// cast member script), the same rule clicks use: a sprite covered by another
+/// active sprite does not see the pointer at all, while a script-less sprite
+/// drawn over it does not take the pointer away. A measured map animates a
+/// script-less piece over a house every frame; counting it made the house's
+/// hover switch off and on as the piece's pixels moved under a still pointer. Sending them to every overlapping sprite that
 /// had a handler let a lower sprite's mouseEnter run after the front-most
 /// sprite's and undo it (a measured map: a ground patch carrying
 /// one house's behaviour sits under another house, and a pointer landing on
@@ -119,9 +123,8 @@ pub fn dispatch_rollover_events() {
     let (now_hovered, prev_hovered) = reserve_player_mut(|player| {
         let (x, y) = player.mouse_loc;
         let prev_hovered = std::mem::take(&mut player.hovered_sprites);
-        let now_hovered: Vec<i16> = crate::player::score::get_sprites_at(player, x, y)
-            .first()
-            .map(|num| *num as i16)
+        let now_hovered: Vec<i16> = crate::player::score::get_sprite_at(player, x, y, true)
+            .map(|num| num as i16)
             .into_iter()
             .collect();
         player.hovered_sprites = now_hovered.clone();
@@ -153,9 +156,8 @@ pub async fn dispatch_rollover_events_now() {
     let (now_hovered, prev_hovered) = reserve_player_mut(|player| {
         let (x, y) = player.mouse_loc;
         let prev_hovered = std::mem::take(&mut player.hovered_sprites);
-        let now_hovered: Vec<i16> = crate::player::score::get_sprites_at(player, x, y)
-            .first()
-            .map(|num| *num as i16)
+        let now_hovered: Vec<i16> = crate::player::score::get_sprite_at(player, x, y, true)
+            .map(|num| num as i16)
             .into_iter()
             .collect();
         player.hovered_sprites = now_hovered.clone();
