@@ -554,6 +554,7 @@ impl VectorShapeMemberHandlers {
                     vs.vertices = verts;
                     vs.new_curve_count = new_curve_count;
                     vs.recompute_bbox();
+                    vs.resize_to_vertices();
                     return Ok(());
                 }
                 _ => return Err(ScriptError::new(

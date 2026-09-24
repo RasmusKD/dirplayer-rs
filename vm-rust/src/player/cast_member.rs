@@ -893,6 +893,30 @@ impl VectorShapeMember {
     /// mutation of `vertices` (e.g. `addVertex`) so the `.image` rasterizer
     /// and `width()`/`height()` fallbacks stay correct. Mirrors the bbox
     /// computation in `From<VectorShapeInfo>`.
+    /// After a script replaces the vertices, the authored member size no
+    /// longer describes the shape: size the member from the new outline.
+    /// Director's authored sizes are the vertex span plus the stroke width
+    /// on each side (a +-20 square with a 1 px stroke is 42 wide). A
+    /// registration point that sat in the middle moves to the new middle.
+    pub fn resize_to_vertices(&mut self) {
+        if self.vertices.is_empty() {
+            return;
+        }
+        let stroke = self.stroke_width.max(0.0);
+        let span_w = (self.bbox_right - self.bbox_left) - stroke;
+        let span_h = (self.bbox_bottom - self.bbox_top) - stroke;
+        let new_w = (span_w + 2.0 * stroke).ceil().max(1.0) as u32;
+        let new_h = (span_h + 2.0 * stroke).ceil().max(1.0) as u32;
+        let was_centered = self.center_reg_point
+            || (self.member_width > 0
+                && self.reg_point == ((self.member_width / 2) as i16, (self.member_height / 2) as i16));
+        self.member_width = new_w;
+        self.member_height = new_h;
+        if was_centered {
+            self.reg_point = ((new_w / 2) as i16, (new_h / 2) as i16);
+        }
+    }
+
     pub fn recompute_bbox(&mut self) {
         let mut left = f32::MAX;
         let mut top = f32::MAX;
@@ -6740,5 +6764,36 @@ impl CastMember {
             bg_color: initial_bg_color,
             reg_point,
         }
+    }
+}
+
+#[cfg(test)]
+mod vector_resize_tests {
+    use super::VectorShapeMember;
+    use crate::director::enums::VectorShapeVertex;
+
+    fn vertex(x: f32, y: f32) -> VectorShapeVertex {
+        VectorShapeVertex { x, y, handle1_x: 0.0, handle1_y: 0.0, handle2_x: 0.0, handle2_y: 0.0 }
+    }
+
+    #[test]
+    fn new_vertices_resize_the_member_and_keep_a_centred_reg_point_centred() {
+        let mut vs = VectorShapeMember::new();
+        vs.stroke_width = 1.0;
+        // Authored 32x40 with its registration point in the middle.
+        vs.member_width = 32;
+        vs.member_height = 40;
+        vs.reg_point = (16, 20);
+        // A script writes a 40 x 55 outline.
+        vs.vertices = vec![vertex(20.0, 20.0), vertex(0.0, -10.0), vertex(-20.0, -20.0), vertex(-15.0, 35.0), vertex(20.0, 20.0)];
+        vs.recompute_bbox();
+        vs.resize_to_vertices();
+        assert_eq!((vs.member_width, vs.member_height), (42, 57));
+        assert_eq!(vs.reg_point, (21, 28));
+        // A square stays square.
+        vs.vertices = vec![vertex(15.0, 15.0), vertex(15.0, -15.0), vertex(-15.0, -15.0), vertex(-15.0, 15.0), vertex(15.0, 15.0)];
+        vs.recompute_bbox();
+        vs.resize_to_vertices();
+        assert_eq!(vs.member_width, vs.member_height);
     }
 }
