@@ -6065,6 +6065,32 @@ impl WebGL2Renderer {
         let top_spacing = ((top_spacing as f64) * scale).round() as i16;
         let member_top_spacing = ((member_top_spacing as f64) * scale).round() as i16;
         let bottom_spacing = ((bottom_spacing as f64) * scale).round() as i16;
+        // The per-paragraph tables are in stage pixels too. Left unscaled,
+        // a two-line label with a fixed 24 px line stride kept 24 device
+        // pixels between its lines at 1.6x, and the bitmap measured from
+        // their sum came out too short, so its first line was cut off.
+        let scale_px = |v: i32| ((v as f64) * scale).round() as i32;
+        let per_line_spacings_scaled: Vec<u16> = per_line_spacings
+            .iter()
+            .map(|&s| ((s as f64) * scale).round() as u16)
+            .collect();
+        let per_line_spacings = per_line_spacings_scaled.as_slice();
+        let par_infos_scaled: Vec<crate::director::chunks::xmedia_styled_text::ParInfo> =
+            par_infos_for_native
+                .iter()
+                .map(|pi| {
+                    let mut pi = pi.clone();
+                    pi.line_spacing = scale_px(pi.line_spacing);
+                    pi.line_height = scale_px(pi.line_height);
+                    pi.left_indent = scale_px(pi.left_indent);
+                    pi.right_indent = scale_px(pi.right_indent);
+                    pi.first_indent = scale_px(pi.first_indent);
+                    pi.top_spacing = scale_px(pi.top_spacing);
+                    pi.bottom_spacing = scale_px(pi.bottom_spacing);
+                    pi
+                })
+                .collect();
+        let par_infos_for_native = par_infos_scaled.as_slice();
         let styled_spans_scaled: Option<Vec<StyledSpan>> = styled_spans.map(|spans| {
             spans.iter().map(|s| {
                 let mut style = s.style.clone();
