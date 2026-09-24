@@ -6890,23 +6890,35 @@ pub fn get_concrete_sprite_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect 
             //
             // Falls back to centering when regPoint or member dims are
             // missing (e.g. Lingo `new(#vectorShape)` synthesized members).
+            //
+            // A sprite that was never resized shows the member at its own
+            // size, as an unstretched bitmap does: the score's box is the
+            // size the shape had when the score was saved. A movie that
+            // rewrites `vertexList` at run time gives the member a new size,
+            // and holding the old box stretched a 42 px shape over 202 px.
             let mw = vs.member_width as i32;
             let mh = vs.member_height as i32;
+            let stretched = sprite.stretch != 0 || sprite.has_size_tweened;
+            let (width, height) = if !stretched && mw > 0 && mh > 0 {
+                (mw, mh)
+            } else {
+                (sprite.width, sprite.height)
+            };
             let (reg_x, reg_y) = if mw > 0 && mh > 0 {
-                let sx = sprite.width as f32 / mw as f32;
-                let sy = sprite.height as f32 / mh as f32;
+                let sx = width as f32 / mw as f32;
+                let sy = height as f32 / mh as f32;
                 (
                     (vs.reg_point.0 as f32 * sx).round() as i32,
                     (vs.reg_point.1 as f32 * sy).round() as i32,
                 )
             } else {
-                (sprite.width / 2, sprite.height / 2)
+                (width / 2, height / 2)
             };
             IntRect::from(
                 sprite.loc_h - reg_x,
                 sprite.loc_v - reg_y,
-                sprite.loc_h - reg_x + sprite.width,
-                sprite.loc_v - reg_y + sprite.height,
+                sprite.loc_h - reg_x + width,
+                sprite.loc_v - reg_y + height,
             )
         }
         CastMemberType::Flash(flash_member) => {
