@@ -1642,6 +1642,13 @@ impl Score {
                 }
 
                 let sound_channel = if *channel_index == 3 { 2 } else { 1 };
+                // Only a sound this score started can be the one it asks for
+                // now. Channels outlive a movie switch, and the next movie's
+                // member with the same number is a different sound.
+                let started_by_this_score = self
+                    .sound_span_started
+                    .get(channel_index)
+                    .map_or(false, |(member, _)| *member == sound_data.cast_member);
 
                 let started = reserve_player_mut(|player| {
                     if !player.is_playing {
@@ -1671,8 +1678,11 @@ impl Score {
                                     }
                                 }
 
-                                // Checking if the sound is looping
-                                if channel.loop_count == 0 {
+                                // A looping sound counts too, but only while the
+                                // channel still holds it: a stopped channel
+                                // keeps its last member and loop count, and a
+                                // new span must start that sound again.
+                                if channel.loop_count == 0 && channel.status != SoundStatus::Idle {
                                     // 0 means loop forever
                                     if let Some(ref current_member_ref) = channel.member {
                                         let current_datum = player.get_datum(current_member_ref);
@@ -1690,7 +1700,7 @@ impl Score {
                             })
                             .unwrap_or(false);
 
-                        if !already_playing {
+                        if !already_playing || !started_by_this_score {
                             // For film loops, look up the sound in the film loop's cast library
                             // For the main score, use the global slot number lookup
                             let sound_member_opt = match &score_ref {
