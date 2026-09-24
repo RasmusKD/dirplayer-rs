@@ -92,6 +92,46 @@ fn blend_alpha(dst: u8, src: u8, alpha: f32) -> u8 {
     (src as f32 * alpha + dst as f32 * (1.0 - alpha)) as u8
 }
 
+/// How a vector shape's closed fill is coloured.
+#[derive(Clone, Copy)]
+enum GradientFill {
+    None,
+    Radial,
+    Linear { direction: f32, scale: f32, offset: (f32, f32), cycles: i32 },
+}
+
+/// Position (0..1) of a pixel along a vector shape's linear gradient.
+///
+/// The ramp runs from `fillColor` (t = 0) to `endColor` (t = 1) across the
+/// shape's bounding box. `fillDirection` rotates it clockwise in screen
+/// space: 0 puts `fillColor` on the left edge, 90 on the top edge, 180 on
+/// the right and 270 on the bottom. `fillScale` stretches the ramp about the
+/// box centre (100 = the box's extent along the direction), `fillOffset`
+/// moves that centre, and `fillCycles` repeats the ramp.
+pub fn linear_gradient_t(
+    px: f32,
+    py: f32,
+    bbox: (f32, f32, f32, f32),
+    direction_deg: f32,
+    scale_pct: f32,
+    offset: (f32, f32),
+    cycles: i32,
+) -> f32 {
+    let (left, top, right, bottom) = bbox;
+    let (sin, cos) = direction_deg.to_radians().sin_cos();
+    let cx = (left + right) / 2.0 + offset.0;
+    let cy = (top + bottom) / 2.0 + offset.1;
+    let extent = (right - left) * cos.abs() + (bottom - top) * sin.abs();
+    let length = (extent * scale_pct / 100.0).max(1.0);
+    let along = (px - cx) * cos + (py - cy) * sin;
+    let t = (along / length + 0.5).clamp(0.0, 1.0);
+    if cycles > 1 && t < 1.0 {
+        (t * cycles as f32).fract()
+    } else {
+        t
+    }
+}
+
 fn blend_color_alpha(dst: (u8, u8, u8), src: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
     if alpha == 0.0 {
         return dst;
@@ -1584,12 +1624,26 @@ impl Bitmap {
         // The catalog floor preview's `floor_shape_preview` uses
         // fill_mode 2 with closed=true → still fills correctly.
         if vector_data.fill_mode != 0 && vector_data.closed && all_points.len() >= 3 {
-            let is_gradient = vector_data.fill_mode == 2;
+            let gradient = if vector_data.fill_mode != 2 {
+                GradientFill::None
+            } else if vector_data.gradient_type == BuiltInSymbol::Radial {
+                GradientFill::Radial
+            } else {
+                GradientFill::Linear {
+                    direction: vector_data.fill_direction,
+                    scale: vector_data.fill_scale,
+                    offset: (
+                        vector_data.fill_offset.0 as f32 * scale_x,
+                        vector_data.fill_offset.1 as f32 * scale_y,
+                    ),
+                    cycles: vector_data.fill_cycles,
+                }
+            };
             self.scanline_fill_polygon_gradient(
                 &all_points,
                 vector_data.fill_color,
                 vector_data.end_color,
-                is_gradient,
+                gradient,
                 palettes,
                 alpha,
             );
@@ -1669,21 +1723,21 @@ impl Bitmap {
         alpha: f32,
     ) {
         // Solid-fill convenience wrapper.
-        self.scanline_fill_polygon_gradient(points, color, color, false, palettes, alpha);
+        self.scanline_fill_polygon_gradient(points, color, color, GradientFill::None, palettes, alpha);
     }
 
-    /// Polygon scanline fill with optional radial gradient. When
-    /// `is_gradient` is true, pixels closer to the polygon centroid get
-    /// `fill_color` and pixels at the bounding-box corners get `end_color`,
-    /// with linear interpolation in between. CS catalog floor preview
-    /// (`floor_shape_preview`) needs gradient fill so its trapezoid renders
-    /// with the brown start→end ramp instead of a flat colour.
+    /// Polygon scanline fill with an optional gradient. A radial gradient
+    /// gives pixels closer to the polygon centroid `fill_color` and pixels
+    /// at the bounding-box corners `end_color`. CS catalog floor preview
+    /// (`floor_shape_preview`) needs it so its trapezoid renders with the
+    /// brown start→end ramp. A linear gradient ramps across the polygon's
+    /// bounding box along `fillDirection` (see `linear_gradient_t`).
     fn scanline_fill_polygon_gradient(
         &mut self,
         points: &[(f32, f32)],
         fill_color: (u8, u8, u8),
         end_color: (u8, u8, u8),
-        is_gradient: bool,
+        gradient: GradientFill,
         palettes: &PaletteMap,
         alpha: f32,
     ) {
@@ -1745,10 +1799,24 @@ impl Bitmap {
                 let x_start = intersections[i].ceil() as i32;
                 let x_end = intersections[i + 1].floor() as i32;
                 for x in x_start..=x_end {
-                    let color = if is_gradient {
-                        let dx = x as f32 + 0.5 - cx;
-                        let dy = y as f32 + 0.5 - cy;
-                        let t = ((dx * dx + dy * dy).sqrt() / max_dist).clamp(0.0, 1.0);
+                    let t = match gradient {
+                        GradientFill::None => None,
+                        GradientFill::Radial => {
+                            let dx = x as f32 + 0.5 - cx;
+                            let dy = y as f32 + 0.5 - cy;
+                            Some(((dx * dx + dy * dy).sqrt() / max_dist).clamp(0.0, 1.0))
+                        }
+                        GradientFill::Linear { direction, scale, offset, cycles } => Some(linear_gradient_t(
+                            x as f32 + 0.5,
+                            y as f32 + 0.5,
+                            (min_x, min_y, max_x, max_y),
+                            direction,
+                            scale,
+                            offset,
+                            cycles,
+                        )),
+                    };
+                    let color = if let Some(t) = t {
                         (
                             ((1.0 - t) * fill_color.0 as f32 + t * end_color.0 as f32) as u8,
                             ((1.0 - t) * fill_color.1 as f32 + t * end_color.1 as f32) as u8,
