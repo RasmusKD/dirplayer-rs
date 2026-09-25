@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use wasm_bindgen::JsValue;
-use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlUniformLocation};
+use web_sys::{WebGl2RenderingContext, WebGlProgram, WebGlShader, WebGlUniformLocation};
 
 use super::context::WebGL2Context;
 
@@ -243,24 +243,42 @@ pub struct ShaderManager {
     active_ink: Option<InkMode>,
 }
 
+/// A program whose compile and link were issued but not yet waited for.
+struct PendingProgram {
+    program: WebGlProgram,
+    vert: WebGlShader,
+    frag: WebGlShader,
+}
+
 impl ShaderManager {
     /// Create shader manager and compile all shaders
     pub fn new(context: &WebGL2Context) -> Result<Self, JsValue> {
+        // Start every program before asking about any of them. A status or
+        // uniform query waits for that program's compile and link to finish,
+        // so querying each one as it was made built the twelve programs one
+        // after another: a first visit on Windows (ANGLE, no shader cache yet)
+        // spent 420-500 ms blocked here. Issued together, the driver works
+        // on them in parallel and the queries below mostly find them done.
+        // KHR_parallel_shader_compile, where offered, lets it use threads.
+        let _ = context.gl().get_extension("KHR_parallel_shader_compile");
+        let pending = vec![
+            (InkMode::Copy, Self::compile_ink_copy(context)?),
+            (InkMode::BackgroundTransparent, Self::compile_ink_bg_transparent(context)?),
+            (InkMode::AddPin, Self::compile_ink_add_pin(context)?),
+            (InkMode::SubPin, Self::compile_ink_sub_pin(context)?),
+            (InkMode::Darken, Self::compile_ink_darken(context)?),
+            (InkMode::NotGhost, Self::compile_ink_not_ghost(context)?),
+            (InkMode::Matte, Self::compile_ink_matte(context)?),
+            (InkMode::Lighten, Self::compile_ink_lighten(context)?),
+            (InkMode::Reverse, Self::compile_ink_reverse(context)?),
+            (InkMode::Light, Self::compile_ink_light(context)?),
+            (InkMode::Dark, Self::compile_ink_dark(context)?),
+            (InkMode::Ghost, Self::compile_ink_ghost(context)?),
+        ];
         let mut programs = HashMap::new();
-
-        // Compile shader for each ink mode
-        programs.insert(InkMode::Copy, Self::compile_ink_copy(context)?);
-        programs.insert(InkMode::BackgroundTransparent, Self::compile_ink_bg_transparent(context)?);
-        programs.insert(InkMode::AddPin, Self::compile_ink_add_pin(context)?);
-        programs.insert(InkMode::SubPin, Self::compile_ink_sub_pin(context)?);
-        programs.insert(InkMode::Darken, Self::compile_ink_darken(context)?);
-        programs.insert(InkMode::NotGhost, Self::compile_ink_not_ghost(context)?);
-        programs.insert(InkMode::Matte, Self::compile_ink_matte(context)?);
-        programs.insert(InkMode::Lighten, Self::compile_ink_lighten(context)?);
-        programs.insert(InkMode::Reverse, Self::compile_ink_reverse(context)?);
-        programs.insert(InkMode::Light, Self::compile_ink_light(context)?);
-        programs.insert(InkMode::Dark, Self::compile_ink_dark(context)?);
-        programs.insert(InkMode::Ghost, Self::compile_ink_ghost(context)?);
+        for (ink, program) in pending {
+            programs.insert(ink, Self::finish_program(context, program)?);
+        }
 
         Ok(Self {
             programs,
@@ -374,7 +392,7 @@ void main() {
     }
 
     /// Compile Ink 0 (Copy) shader
-    fn compile_ink_copy(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_copy(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 precision highp float;
 
@@ -399,11 +417,11 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 36 (Background Transparent) shader
-    fn compile_ink_bg_transparent(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_bg_transparent(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 #define SAMPLE_KEYS_BG 1
 precision highp float;
@@ -433,13 +451,13 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 33 (Add Pin) shader
     /// Director Add Pin: Color-key transparency + additive blending
     /// Pixels matching bgColor are transparent, others are additively blended
-    fn compile_ink_add_pin(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_add_pin(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 #define SAMPLE_KEYS_BG 1
 precision highp float;
@@ -478,13 +496,13 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 35 (Sub Pin) shader
     /// Director Sub Pin: Subtract source from destination, pin to 0 (black)
     /// bgColor pixels are transparent
-    fn compile_ink_sub_pin(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_sub_pin(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 precision highp float;
 
@@ -515,14 +533,14 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 41 (Darken) shader
     /// Director Darken: result = src * bgColor, then alpha-blended with destination
     /// This multiplies the source color by the background color, creating a tinting/darkening effect.
     /// Uses standard alpha blending (not GL_DST_COLOR multiply blend).
-    fn compile_ink_darken(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_darken(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 precision highp float;
 
@@ -556,7 +574,7 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 7 (Not Ghost) shader
@@ -566,7 +584,7 @@ void main() {
     /// - If src does NOT match bgColor: leave dst unchanged (discard/transparent)
     /// This makes foreground pixels (like a black door) transparent,
     /// while background pixels either blend or are masked by matte.
-    fn compile_ink_not_ghost(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_not_ghost(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 precision highp float;
 
@@ -597,14 +615,14 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 8 (Matte) shader
     /// Matte: Uses alpha channel from texture (flood-fill matte baked in during texture upload)
     /// Edge-connected background pixels have alpha=0, interior pixels stay opaque
     /// This matches Canvas2D behavior where only edge-connected bgColor pixels are transparent
-    fn compile_ink_matte(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_matte(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 precision highp float;
 
@@ -630,14 +648,14 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 40 (Lighten) shader
     /// Lighten: Only draws pixels that are lighter than the destination
     /// Note: This requires reading the framebuffer which isn't directly possible,
     /// so we use a MAX blend equation instead
-    fn compile_ink_lighten(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_lighten(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 #define SAMPLE_KEYS_BG 1
 precision highp float;
@@ -671,14 +689,14 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 2 (Reverse) shader — inverts RGB, preserves alpha, and
     /// color-keys the background color (Director's Reverse ink treats the
     /// bgColor as transparent; the CPU path mattes it via should_matte_sprite).
     /// Without the color-key the sprite drew an opaque inverted rectangle.
-    fn compile_ink_reverse(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_reverse(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 #define SAMPLE_KEYS_BG 1
 precision highp float;
@@ -708,13 +726,13 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
         /// Compile Ink 37 (Light) shader
     /// Light: MAX(src, dst) per channel. bgColor pixels are transparent.
     /// Uses GL_MAX blend equation for per-channel max.
-    fn compile_ink_light(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_light(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 #define SAMPLE_KEYS_BG 1
 precision highp float;
@@ -745,13 +763,13 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 39 (Dark) shader
     /// Dark: MIN(src, dst) per channel. bgColor pixels are transparent.
     /// Uses GL_MIN blend equation for per-channel min.
-    fn compile_ink_dark(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_dark(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 #define SAMPLE_KEYS_BG 1
 precision highp float;
@@ -782,14 +800,14 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
     /// Compile Ink 3 (Ghost) shader
     /// Ghost ink makes background-color pixels transparent and inverts foreground pixels.
     /// Original Director behavior: dst = dst & ~src on palette indices.
     /// WebGL approximation: color-key bg + invert RGB for foreground.
-    fn compile_ink_ghost(context: &WebGL2Context) -> Result<ShaderProgram, JsValue> {
+    fn compile_ink_ghost(context: &WebGL2Context) -> Result<PendingProgram, JsValue> {
         let frag_source = r#"#version 300 es
 #define SAMPLE_KEYS_BG 1
 precision highp float;
@@ -820,32 +838,76 @@ void main() {
 }
 "#;
 
-        Self::compile_program(context, Self::vertex_shader_source(), frag_source)
+        Self::start_program(context, Self::vertex_shader_source(), frag_source)
     }
 
-    /// Compile and link a shader program
-    fn compile_program(
+    /// Start compiling and linking a shader program without waiting for it.
+    fn start_program(
         context: &WebGL2Context,
         vert_source: &str,
         frag_source: &str,
+    ) -> Result<PendingProgram, JsValue> {
+        let gl = context.gl();
+        let frag_source = frag_source.replace("//@SAMPLE_SPRITE@", SAMPLE_SPRITE_GLSL);
+        let make = |kind: u32, source: &str| -> Result<WebGlShader, JsValue> {
+            let shader = gl
+                .create_shader(kind)
+                .ok_or_else(|| JsValue::from_str("Failed to create shader"))?;
+            gl.shader_source(&shader, source);
+            gl.compile_shader(&shader);
+            Ok(shader)
+        };
+        let vert = make(WebGl2RenderingContext::VERTEX_SHADER, vert_source)?;
+        let frag = make(WebGl2RenderingContext::FRAGMENT_SHADER, &frag_source)?;
+        let program = gl
+            .create_program()
+            .ok_or_else(|| JsValue::from_str("Failed to create program"))?;
+        gl.attach_shader(&program, &vert);
+        gl.attach_shader(&program, &frag);
+        gl.link_program(&program);
+        Ok(PendingProgram { program, vert, frag })
+    }
+
+    /// Wait for a started program, report a failure with the shader logs,
+    /// and read its uniform locations.
+    fn finish_program(
+        context: &WebGL2Context,
+        pending: PendingProgram,
     ) -> Result<ShaderProgram, JsValue> {
         let gl = context.gl();
-
-        let vert_shader = context.compile_shader(
-            WebGl2RenderingContext::VERTEX_SHADER,
-            vert_source,
-        )?;
-        let frag_source = frag_source.replace("//@SAMPLE_SPRITE@", SAMPLE_SPRITE_GLSL);
-        let frag_shader = context.compile_shader(
-            WebGl2RenderingContext::FRAGMENT_SHADER,
-            &frag_source,
-        )?;
-
-        let program = context.link_program(&vert_shader, &frag_shader)?;
+        let PendingProgram { program, vert, frag } = pending;
+        let linked = gl
+            .get_program_parameter(&program, WebGl2RenderingContext::LINK_STATUS)
+            .as_bool()
+            .unwrap_or(false);
+        if !linked {
+            let mut log = String::new();
+            for (name, shader) in [("vertex", &vert), ("fragment", &frag)] {
+                let compiled = gl
+                    .get_shader_parameter(shader, WebGl2RenderingContext::COMPILE_STATUS)
+                    .as_bool()
+                    .unwrap_or(false);
+                if !compiled {
+                    log.push_str(&format!(
+                        "Shader compilation failed ({}): {}\n",
+                        name,
+                        gl.get_shader_info_log(shader).unwrap_or_default()
+                    ));
+                }
+            }
+            log.push_str(&format!(
+                "Program linking failed: {}",
+                gl.get_program_info_log(&program).unwrap_or_default()
+            ));
+            gl.delete_shader(Some(&vert));
+            gl.delete_shader(Some(&frag));
+            gl.delete_program(Some(&program));
+            return Err(JsValue::from_str(&log));
+        }
 
         // Clean up shaders after linking
-        gl.delete_shader(Some(&vert_shader));
-        gl.delete_shader(Some(&frag_shader));
+        gl.delete_shader(Some(&vert));
+        gl.delete_shader(Some(&frag));
 
         // Get uniform locations
         let u_projection = gl.get_uniform_location(&program, "u_projection");
