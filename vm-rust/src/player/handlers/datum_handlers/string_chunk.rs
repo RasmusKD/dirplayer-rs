@@ -25,11 +25,23 @@ pub struct StringChunkUtils {}
 /// Out-of-range indices clamp to the string's byte length so the caller's
 /// "delete chars 100..200 of a 5-char string" still produces an empty
 /// range instead of panicking.
-/// Rewrite the concatenated text of `spans` from `old_text` to `new_text`,
-/// preserving the style of every run outside the changed region. The changed
-/// run (found by common prefix/suffix diff) takes the style that already
-/// covered its first character, so replacing one line's text keeps that line's
-/// own weight instead of collapsing the member to its first run's style.
+pub(crate) fn char_range_to_byte_range(s: &str, char_start: usize, char_end: usize) -> (usize, usize) {
+    if char_start >= char_end {
+        // Caller already handles the "empty range" case for ranges that
+        // collapse during clamping; return a valid empty slice at the
+        // appropriate boundary so replace_range is still a no-op.
+        let bs = s.char_indices().nth(char_start).map(|(b, _)| b).unwrap_or(s.len());
+        return (bs, bs);
+    }
+    let mut iter = s.char_indices();
+    let byte_start = iter.by_ref().nth(char_start).map(|(b, _)| b).unwrap_or(s.len());
+    // We've consumed `char_start + 1` items from iter. To advance to the
+    // `char_end`th codepoint, step forward `char_end - char_start - 1` more.
+    let extra = char_end - char_start - 1;
+    let byte_end = iter.nth(extra).map(|(b, _)| b).unwrap_or(s.len());
+    (byte_start, byte_end)
+}
+
 /// The line break this text already uses. Rebuilding a line range has to put
 /// the text back together with the breaks it came with: a member authored
 /// with CR breaks that came back with CRLF grew by one byte per line, which
@@ -46,6 +58,11 @@ fn line_break_of(text: &str) -> &'static str {
         "\r"
     }
 }
+/// Rewrite the concatenated text of `spans` from `old_text` to `new_text`,
+/// preserving the style of every run outside the changed region. The changed
+/// run (found by common prefix/suffix diff) takes the style that already
+/// covered its first character, so replacing one line's text keeps that line's
+/// own weight instead of collapsing the member to its first run's style.
 fn rewrite_span_text(spans: &[StyledSpan], old_text: &str, new_text: &str) -> Vec<StyledSpan> {
     let oc: Vec<char> = old_text.chars().collect();
     let nc: Vec<char> = new_text.chars().collect();
@@ -90,23 +107,6 @@ fn rewrite_span_text(spans: &[StyledSpan], old_text: &str, new_text: &str) -> Ve
         off = e;
     }
     out
-}
-
-pub(crate) fn char_range_to_byte_range(s: &str, char_start: usize, char_end: usize) -> (usize, usize) {
-    if char_start >= char_end {
-        // Caller already handles the "empty range" case for ranges that
-        // collapse during clamping; return a valid empty slice at the
-        // appropriate boundary so replace_range is still a no-op.
-        let bs = s.char_indices().nth(char_start).map(|(b, _)| b).unwrap_or(s.len());
-        return (bs, bs);
-    }
-    let mut iter = s.char_indices();
-    let byte_start = iter.by_ref().nth(char_start).map(|(b, _)| b).unwrap_or(s.len());
-    // We've consumed `char_start + 1` items from iter. To advance to the
-    // `char_end`th codepoint, step forward `char_end - char_start - 1` more.
-    let extra = char_end - char_start - 1;
-    let byte_end = iter.nth(extra).map(|(b, _)| b).unwrap_or(s.len());
-    (byte_start, byte_end)
 }
 
 impl StringChunkUtils {
@@ -209,9 +209,6 @@ impl StringChunkUtils {
                         let old_text = member.text.clone();
                         if member.html_styled_spans.is_empty() || old_text == new_string {
                             member.set_text_preserving_caret(new_string);
-                            if member.html_styled_spans.is_empty() {
-                                member.html_styled_spans.clear();
-                            }
                             member.text_set_at_runtime = true;
                         } else {
                             let new_spans = rewrite_span_text(&member.html_styled_spans, &old_text, &new_string);
@@ -1540,14 +1537,14 @@ mod tests {
         // next write found nothing to keep, so the member fell back to its
         // member-wide style: a tooltip whose name alone is bold went wholly
         // bold once the map updated its progress line.
-        let mut v = spans(&[("The asteroid belt", true), ("\r(mixed and decimal numbers)\r0/6", false)]);
-        let mut text = "The asteroid belt\r(mixed and decimal numbers)\r0/6".to_string();
+        let mut v = spans(&[("The north tower", true), ("\r(fractions and decimals)\r0/6", false)]);
+        let mut text = "The north tower\r(fractions and decimals)\r0/6".to_string();
         for next in [
-            "Asteroide-b\u{e6}ltet\r(mixed and decimal numbers)\r0/6",
-            "Asteroide-b\u{e6}ltet\r(blandede/decimal-tal)\r0/6",
-            "Asteroide-b\u{e6}ltet\r(blandede/decimal-tal)\r0/6",
-            "Asteroide-b\u{e6}ltet\r(blandede/decimal-tal)\r3/6",
-            "Asteroide-b\u{e6}ltet\r(blandede/decimal-tal)\r3/6",
+            "Nordt\u{e5}rnet\r(fractions and decimals)\r0/6",
+            "Nordt\u{e5}rnet\r(br\u{f8}ker og decimaltal)\r0/6",
+            "Nordt\u{e5}rnet\r(br\u{f8}ker og decimaltal)\r0/6",
+            "Nordt\u{e5}rnet\r(br\u{f8}ker og decimaltal)\r3/6",
+            "Nordt\u{e5}rnet\r(br\u{f8}ker og decimaltal)\r3/6",
         ] {
             v = rewrite_span_text(&v, &text, next);
             text = next.to_string();
@@ -1563,28 +1560,28 @@ mod tests {
         // A map tooltip: bold name, regular subtitle and progress. The
         // localisation rewrites line 1 and then line 2; both writes must
         // leave the regular lines regular.
-        let name_da = "Asteroide-b\u{e6}ltet";
-        let mut v = spans(&[("The asteroid belt", true), ("\r(mixed and decimal numbers)\r0/6", false)]);
-        let mut text = "The asteroid belt\r(mixed and decimal numbers)\r0/6".to_string();
+        let name_da = "Nordt\u{e5}rnet";
+        let mut v = spans(&[("The north tower", true), ("\r(fractions and decimals)\r0/6", false)]);
+        let mut text = "The north tower\r(fractions and decimals)\r0/6".to_string();
 
-        let next = format!("{}\r(mixed and decimal numbers)\r0/6", name_da);
+        let next = format!("{}\r(fractions and decimals)\r0/6", name_da);
         v = rewrite_span_text(&v, &text, &next);
         text = next;
         assert_eq!(
             runs(&v),
             vec![
                 (name_da.to_string(), true),
-                ("\r(mixed and decimal numbers)\r0/6".to_string(), false),
+                ("\r(fractions and decimals)\r0/6".to_string(), false),
             ]
         );
 
-        let next = format!("{}\r(blandede/decimal-tal)\r0/6", name_da);
+        let next = format!("{}\r(br\u{f8}ker og decimaltal)\r0/6", name_da);
         v = rewrite_span_text(&v, &text, &next);
         assert_eq!(
             runs(&v),
             vec![
                 (name_da.to_string(), true),
-                ("\r(blandede/decimal-tal)\r0/6".to_string(), false),
+                ("\r(br\u{f8}ker og decimaltal)\r0/6".to_string(), false),
             ]
         );
     }
