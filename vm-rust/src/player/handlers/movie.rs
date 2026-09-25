@@ -1103,6 +1103,11 @@ impl MovieHandlers {
         if let Err(e) = js_sys::eval(&code) {
             log::warn!("printFrom: schedule failed: {:?}", e);
         }
+        // The print dialog takes the keyboard, and the keys that asked for
+        // the print are released in it without the page hearing of it. Left
+        // held, a later press of the modifier alone reads as the whole
+        // shortcut again.
+        reserve_player_mut(|player| player.keyboard_manager.release_all());
         Ok(DatumRef::Void)
     }
 
