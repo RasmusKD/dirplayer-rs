@@ -420,8 +420,8 @@ impl GetSetBytecodeHandler {
                             // range and keeps the rest: `member(x).char[1..10]
                             // = "4 x 8"` on "100 x 100" leaves "4 x 8". The
                             // chunk used to be dropped here, so the member kept
-                            // whatever the author had typed — every stone in
-                            // the lava scene was labelled "100 x N" instead of
+                            // whatever the author had typed — every label in
+                            // a measured scene was labelled "100 x N" instead of
                             // its own size, because the scene writes each label
                             // with `char[1..10]`.
                             let mut handled = handled;

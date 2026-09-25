@@ -401,8 +401,8 @@ fn normalize_task_url(url: &str, base_path: Option<&Url>) -> Url {
 /// Find an existing task for this URL, comparing WITHOUT case.
 ///
 /// Director ran on Windows, where a file name is a file name whatever its
-/// case, and the measured movie leans on that: it preloads "main.dcr" from startMovie
-/// and then asks for "Main.dcr" from the OK button. Comparing exactly made
+/// case, and the measured movie leans on that: it preloads "movie.dcr" from startMovie
+/// and then asks for "Movie.dcr" from the OK button. Comparing exactly made
 /// those two different tasks, so the player downloaded the same 34.5 MB twice
 /// and parsed it twice - measured on a session that walks to the city map.
 ///

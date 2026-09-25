@@ -46,7 +46,7 @@ pub struct CopyPixelsParams<'a> {
     /// smaller than the source — alignment is by registration point.
     pub ink9_mask_offset: (i32, i32),
     /// Sample a shrunk source at floor(d * src / dst), as Director does for
-    /// an authored bitmap (measured on klods.dcr's ruler). Off for text, field
+    /// an authored bitmap (measured on a ruler bitmap drawn smaller than its member). Off for text, field
     /// and shape blits, which keep the pixel-centre rule; see the shader's
     /// u_floor_rule.
     pub floor_rule: bool,
@@ -2678,7 +2678,7 @@ impl Bitmap {
                 // Map destination pixel to source coordinate with scaling.
                 // Director samples a stretched bitmap at floor(d * src / dst),
                 // the top-left of the destination pixel, not its centre.
-                // Measured on klods.dcr's ruler (member 82, 239x46 drawn at
+                // Measured on a ruler bitmap (239x46 drawn at
                 // 166x32): the floor rule reproduces the projector's pixels
                 // 100%, the centre rule 88%, and the difference is the digit
                 // rows the centre rule skips. Rotation and skew keep the

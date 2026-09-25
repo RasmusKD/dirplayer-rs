@@ -19,7 +19,7 @@ use crate::{
 /// and blocking dialogs are the wrong shape for a web page anyway, so the
 /// two dialog handlers below answer from the persistence layer instead:
 /// saving reuses the name the movie suggests (the player's own name), and
-/// loading picks the most recent save. That makes "Gem spil" and "Hent spil"
+/// loading picks the most recent save. That makes the movie's Save and Load menu entries
 /// work end to end, with a save per player name.
 fn list_persisted_saves() -> Vec<String> {
     let mut names: Vec<String> = Vec::new();

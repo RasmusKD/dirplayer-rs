@@ -134,7 +134,7 @@ impl StringChunkUtils {
                         // renderer prefers html_styled_spans when present, so
                         // leaving the old spans in place kept drawing the
                         // PREVIOUS content: the measured movie localises its labels
-                        // with `member("Tekst 3").line[1] = "Klods-lageret"`,
+                        // with `member("Label").line[1] = "..."`,
                         // and the screen went on showing the cast's English
                         // "Mayor's house" while the member held Danish text.
                         // Clearing lets the next render synthesise spans from
@@ -1454,7 +1454,7 @@ mod nested_chunk_write_tests {
         crate::player::init_symbol_table();
         run_test(async {
             let _p = TestPlayer::new();
-            // member("Tekst 4").line[3].word[1] = "4/4" on a three-line text.
+            // member("Label").line[3].word[1] = "4/4" on a three-line text.
             let (source, chunk, args) = reserve_player_mut(|player| {
                 let source = player.alloc_datum(Datum::String("Den Dybe\r\n(gange)\r\n0/4 x".to_string()));
                 let line = StringChunkExpr { chunk_type: StringChunkType::Line, start: 3, end: 3, item_delimiter: ',' };

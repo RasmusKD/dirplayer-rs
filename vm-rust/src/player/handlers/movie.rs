@@ -1049,8 +1049,8 @@ impl MovieHandlers {
     ///
     /// Director rendered the named frames to the printer. We cannot re-render a
     /// frame we are not standing on, and the only call measured asks for the
-    /// frame it is already showing (`printFrom(label("ByScene"), label(
-    /// "ByScene"))`), so hand the current stage to the host page and let it
+    /// frame it is already showing (`printFrom(label("Map"), label(
+    /// "Map"))`), so hand the current stage to the host page and let it
     /// print the canvas. Deferred through setTimeout for the same reason
     /// `goToNetPage` defers its eval: the host callback re-enters WASM, and
     /// that trips the recursive-closure guard if the call stack is still live.

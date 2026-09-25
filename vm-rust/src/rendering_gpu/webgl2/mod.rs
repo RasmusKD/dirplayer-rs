@@ -2023,8 +2023,8 @@ impl WebGL2Renderer {
                     // #line: a line is 1 px in one dimension by nature, so
                     // "width <= 1 || height <= 1" dropped every horizontal and
                     // vertical line before the Line arm below ever ran. The
-                    // divider under the ruler on klods.dcr's working drawing
-                    // went missing this way (S8, measured against the
+                    // divider under a ruler on a measured drawing
+                    // went missing this way (measured against the
                     // projector). A line is skipped only when BOTH collapse.
                     let is_line = matches!(shape_member.shape_info.shape_type, crate::director::enums::ShapeType::Line);
                     if (sprite_width <= 1 || sprite_height <= 1) && !(is_line && (sprite_width > 1 || sprite_height > 1)) {
@@ -3443,8 +3443,8 @@ impl WebGL2Renderer {
                 let h = height as i32;
                 // A sprite that OWNS its size (stretch) keeps it: Director
                 // scales the loop into the authored rect. Overriding with the
-                // loop's natural size and re-centring it on loc pushed this
-                // game's credits animation down past the stage bottom - the
+                // loop's natural size and re-centring it on loc pushed a
+                // measured credits animation down past the stage bottom - the
                 // walking creature entered with only its head above the edge,
                 // where the original walks in at mid-frame.
                 let sprite_owns_size = player

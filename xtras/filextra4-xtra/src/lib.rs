@@ -3,8 +3,8 @@
 //! FileXtra4 — stub plugin for dirplayer-rs.
 //!
 //! A Director MX 2004 movie calls two FileXtra4 handlers:
-//!   - fx_FileExists(path)          (Load.dcr)
-//!   - fx_FolderGetSpecialPath(id)  (main.dcr)
+//!   - fx_FileExists(path)          (loader movie)
+//!   - fx_FolderGetSpecialPath(id)  (main movie)
 //!
 //! Without a registered FileXtra4, `new(xtra "FileXtra4")` raises a
 //! ScriptError, which halts the whole movie (Player::on_script_error calls
