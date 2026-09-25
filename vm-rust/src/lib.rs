@@ -916,6 +916,40 @@ pub fn key_up(key: String, code: u16) {
     player_dispatch(PlayerVMCommand::KeyUp(key, code));
 }
 
+/// Bring the modifier keys in line with what the browser reports on any
+/// input event (`ctrlKey`, `shiftKey`, `altKey`, `metaKey`): a modifier the
+/// event says is up is dropped from the held keys. State only, no keyUp is
+/// sent to the movie. See `KeyboardManager::release_modifier`.
+#[wasm_bindgen]
+pub fn sync_modifiers(ctrl: bool, shift: bool, alt: bool, meta: bool) {
+    let released: Vec<&str> = [
+        (!ctrl, "Control"),
+        (!shift, "Shift"),
+        (!alt, "Alt"),
+        (!alt, "AltGraph"),
+        (!meta, "Meta"),
+    ]
+    .iter()
+    .filter(|(up, _)| *up)
+    .map(|(_, key)| *key)
+    .collect();
+    if released.is_empty() {
+        return;
+    }
+    reserve_player_mut(|player| {
+        for key in &released {
+            player.keyboard_manager.release_modifier(key);
+        }
+    });
+}
+
+/// The page lost the focus: keys released from here on are not reported to
+/// it, so none is held any more. State only, no keyUp is sent to the movie.
+#[wasm_bindgen]
+pub fn release_all_keys() {
+    reserve_player_mut(|player| player.keyboard_manager.release_all());
+}
+
 /// Mirror the keyboard state into every on-stage nested `#movie` sub-player so
 /// its polling `keyPressed(code)` (e.g. g349's arrow-key list scrolling) sees
 /// the same keys as the host. State-only, like `forward_mouse_to_nested` — no

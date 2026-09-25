@@ -11,6 +11,8 @@ import {
   right_mouse_up,
   key_down,
   key_up,
+  release_all_keys,
+  sync_modifiers,
   wants_pointer_lock,
   player_set_picking_mode,
   player_get_sprite_at,
@@ -31,6 +33,15 @@ import {
   ime_composition_end,
   set_renderer_backend,
 } from "vm-rust";
+
+// The modifier keys as the browser reports them on an input event. A key
+// released while another window has the focus (the print dialog Ctrl+P
+// opens, a file dialog, another app) sends no keyup here, so the VM would
+// read it as held until pressed again; every event carries the real state.
+type ModifierEvent = { ctrlKey: boolean; shiftKey: boolean; altKey: boolean; metaKey: boolean };
+function syncModifiersFrom(e: ModifierEvent) {
+  sync_modifiers(e.ctrlKey, e.shiftKey, e.altKey, e.metaKey);
+}
 import { useAppDispatch } from "../../store/hooks";
 import { channelSelected } from "../../store/uiSlice";
 
@@ -371,6 +382,7 @@ export default function Stage({ showControls, enableGestures }: { showControls?:
     // Handle keyboard during pointer lock (focus may be on canvas, not the div)
     const handleKeyDown = (e: KeyboardEvent) => {
       if (ownsPointerLock()) {
+        syncModifiersFrom(e);
         // Don't prevent ESC — browser needs it to exit pointer lock
         if (e.key !== "Escape") e.preventDefault();
         if (!e.repeat) {
@@ -383,10 +395,15 @@ export default function Stage({ showControls, enableGestures }: { showControls?:
         key_up(e.key, e.keyCode);
       }
     };
+    // The page lost the focus: whatever is released from here on is not
+    // reported to it, so start from no keys held.
+    const handleBlur = () => release_all_keys();
     document.addEventListener("mousemove", handleLockedMouseMove);
     document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
     return () => {
+      window.removeEventListener("blur", handleBlur);
       document.removeEventListener("mousemove", handleLockedMouseMove);
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keyup", handleKeyUp);
@@ -495,6 +512,7 @@ export default function Stage({ showControls, enableGestures }: { showControls?:
   }
 
   function dispatchVMMouse(name: "move" | "down" | "up", canvasX: number, canvasY: number, e: React.PointerEvent) {
+    syncModifiersFrom(e);
     if (pickingMode) {
       if (name === "move") {
         mouse_move(canvasX, canvasY);
@@ -784,6 +802,7 @@ export default function Stage({ showControls, enableGestures }: { showControls?:
         // every key — both here on bubble and from the input's handler.
         if (document.activeElement === hiddenInputRef.current) return;
         e.preventDefault();
+        syncModifiersFrom(e);
         // Pass browser key-repeats through: Director fires `on keyDown`
         // repeatedly while a key is held (OS auto-repeat), and event-driven
         // movies rely on that — e.g. Tetris soft-drops one row per repeated
@@ -794,6 +813,7 @@ export default function Stage({ showControls, enableGestures }: { showControls?:
       onKeyUp={e => {
         if (document.activeElement === hiddenInputRef.current) return;
         key_up(e.key, e.keyCode);
+        syncModifiersFrom(e);
       }}
     >
       <div

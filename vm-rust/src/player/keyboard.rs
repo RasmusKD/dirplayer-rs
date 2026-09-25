@@ -111,6 +111,24 @@ impl KeyboardManager {
         self.down_keys.retain(|x| x.code != code_to_remove);
     }
 
+    /// Forget a held modifier the browser says is no longer down. A key
+    /// released while another window has focus (a print or file dialog, a
+    /// switch to another app) never sends its keyup to the page, and the key
+    /// would read as held until pressed again. Director asks the operating
+    /// system for `the controlDown` each time, so it cannot get stuck.
+    pub fn release_modifier(&mut self, key: &str) {
+        self.down_keys.retain(|x| x.key != key);
+    }
+
+    /// Forget every held key. For the moments the page stops receiving key
+    /// events while keys may be down: it lost the focus, or the movie opened
+    /// the print dialog, which takes the keyboard. The keys that started the
+    /// print (Ctrl+P) are released in that dialog, and the page never hears
+    /// of it.
+    pub fn release_all(&mut self) {
+        self.down_keys.clear();
+    }
+
     pub fn is_key_down(&self, key: &str) -> bool {
         self.down_keys.iter().any(|x| x.key == key)
     }
