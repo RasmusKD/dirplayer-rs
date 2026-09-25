@@ -5905,17 +5905,28 @@ pub fn get_sprite_at(player: &DirPlayer, x: i32, y: i32, scripted: bool) -> Opti
 /// the "actual" sprite rect, and the scaling here just amplifies that result
 /// consistently across bitmap/text/etc.
 pub fn get_concrete_sprite_render_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect {
-    let rect = get_concrete_sprite_rect(player, sprite);
-    let layout = crate::player::stage::stage_layout(player);
+    movie_rect_to_render_rect(player, get_concrete_sprite_rect(player, sprite))
+}
+
+/// Maps a rect in movie coordinates into the renderer's space: offset by the
+/// stage's drawRect and scaled by the stage auto-scale factor. Anything the
+/// renderer builds from a sprite's loc or a member's size is in movie
+/// coordinates and has to pass through here before it is drawn.
+pub fn movie_rect_to_render_rect(player: &DirPlayer, rect: IntRect) -> IntRect {
     let (sx, sy) = crate::player::stage::stage_scale(player);
     if (sx - 1.0).abs() < 1e-6 && (sy - 1.0).abs() < 1e-6 {
         return rect;
     }
+    let layout = crate::player::stage::stage_layout(player);
+    scale_movie_rect(rect, layout.draw_rect[0], layout.draw_rect[1], sx, sy)
+}
+
+fn scale_movie_rect(rect: IntRect, origin_x: f64, origin_y: f64, sx: f64, sy: f64) -> IntRect {
     IntRect::from(
-        (layout.draw_rect[0] + rect.left as f64 * sx).round() as i32,
-        (layout.draw_rect[1] + rect.top as f64 * sy).round() as i32,
-        (layout.draw_rect[0] + rect.right as f64 * sx).round() as i32,
-        (layout.draw_rect[1] + rect.bottom as f64 * sy).round() as i32,
+        (origin_x + rect.left as f64 * sx).round() as i32,
+        (origin_y + rect.top as f64 * sy).round() as i32,
+        (origin_x + rect.right as f64 * sx).round() as i32,
+        (origin_y + rect.bottom as f64 * sy).round() as i32,
     )
 }
 
@@ -7184,7 +7195,25 @@ pub fn get_score_sprite_mut<'a>(
 
 #[cfg(test)]
 mod rect_tests {
-    use super::normalise_rect;
+    use super::{normalise_rect, scale_movie_rect};
+    use crate::player::geometry::IntRect;
+
+    #[test]
+    fn a_movie_rect_lands_on_the_scaled_stage() {
+        // A 174x98 rect centred on loc (454,516), stage drawn 1.37x from
+        // x=10. The render rect must be centred on the SCALED loc, not on
+        // the movie loc read as device pixels.
+        let r = scale_movie_rect(IntRect::from(367, 467, 541, 565), 10.0, 0.0, 1.37, 1.37);
+        assert_eq!((r.left, r.top, r.right, r.bottom), (513, 640, 751, 774));
+        let centre = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+        assert_eq!(centre, (632, 707));
+    }
+
+    #[test]
+    fn scale_one_leaves_the_rect_alone() {
+        let r = scale_movie_rect(IntRect::from(367, 467, 541, 565), 0.0, 0.0, 1.0, 1.0);
+        assert_eq!((r.left, r.top, r.right, r.bottom), (367, 467, 541, 565));
+    }
 
     #[test]
     fn inverted_corners_are_swapped() {

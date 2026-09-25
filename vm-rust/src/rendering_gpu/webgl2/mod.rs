@@ -3500,11 +3500,20 @@ impl WebGL2Renderer {
                     let base_h = if filmloop_base_size.1 > 0 { filmloop_base_size.1 } else { h };
                     let reg_x = base_w / 2;
                     let reg_y = base_h / 2;
-                    sprite_rect = IntRect::from(
-                        raw_loc.0 as i32 - reg_x,
-                        raw_loc.1 as i32 - reg_y,
-                        raw_loc.0 as i32 - reg_x + base_w,
-                        raw_loc.1 as i32 - reg_y + base_h,
+                    // loc and the authored size are movie pixels, while
+                    // sprite_rect is in render space. On a scaled stage the
+                    // unmapped rect drew the loop at its movie position read
+                    // as device pixels: up and to the left of the sprite, and
+                    // at 1x size. Measured on a film loop swapped onto a
+                    // moving, unstretched sprite at stage scale 1.37.
+                    sprite_rect = crate::player::score::movie_rect_to_render_rect(
+                        player,
+                        IntRect::from(
+                            raw_loc.0 as i32 - reg_x,
+                            raw_loc.1 as i32 - reg_y,
+                            raw_loc.0 as i32 - reg_x + base_w,
+                            raw_loc.1 as i32 - reg_y + base_h,
+                        ),
                     );
                 }
 
