@@ -3650,19 +3650,17 @@ impl CastMember {
                 // correctly combines JPEG RGB with ALFA alpha channel.
                 // decode_jpeg_bitd only looks for alpha AFTER FFD9 inside the BITD data,
                 // missing the separate ALFA chunk entirely.
-                match decode_jpeg_bitmap(&bitd_chunk.data, bitmap_info, alfa_data) {
-                    Ok(new_bitmap) => bitmap_manager.add_bitmap(new_bitmap),
-                    Err(e) => {
+                // Decoded on first use: see BitmapManager::add_lazy_bitmap.
+                let (jpeg, info, alfa) = (bitd_chunk.data.clone(), bitmap_info.clone(), alfa_data.cloned());
+                bitmap_manager.add_lazy_bitmap(Box::new(move || {
+                    decode_jpeg_bitmap(&jpeg, &info, alfa.as_ref()).unwrap_or_else(|e| {
                         warn!(
                             "Failed to decode JPEG+ALFA bitmap {}: {:?}. Using empty image.",
                             number, e
                         );
-                        bitmap_manager.add_bitmap(Bitmap::new(
-                            1, 1, 8, 8, 0,
-                            PaletteRef::BuiltIn(BuiltInPalette::GrayScale),
-                        ))
-                    }
-                }
+                        Bitmap::new(1, 1, 8, 8, 0, PaletteRef::BuiltIn(BuiltInPalette::GrayScale))
+                    })
+                }))
             } else {
                 let decompressed =
                     decompress_bitmap(&bitd_chunk.data, bitmap_info, cast_lib, bitd_chunk.version);
@@ -3704,15 +3702,14 @@ impl CastMember {
                         _ => None,
                     })
                 });
-                return match decode_jpeg_bitmap(jpeg, bitmap_info, alfa) {
-                    Ok(new_bitmap) => bitmap_manager.add_bitmap(new_bitmap),
-                    Err(e) => {
+                // Decoded on first use: see BitmapManager::add_lazy_bitmap.
+                let (jpeg, info, alfa) = (jpeg.clone(), bitmap_info.clone(), alfa.cloned());
+                return bitmap_manager.add_lazy_bitmap(Box::new(move || {
+                    decode_jpeg_bitmap(&jpeg, &info, alfa.as_ref()).unwrap_or_else(|e| {
                         warn!("Failed to decode ediM JPEG bitmap {}: {:?}. Using empty image.", number, e);
-                        bitmap_manager.add_bitmap(Bitmap::new(
-                            1, 1, 8, 8, 0, PaletteRef::BuiltIn(BuiltInPalette::GrayScale),
-                        ))
-                    }
-                };
+                        Bitmap::new(1, 1, 8, 8, 0, PaletteRef::BuiltIn(BuiltInPalette::GrayScale))
+                    })
+                }));
             }
 
             // A 32-bit alpha+JPEG member whose ediM (colour) chunk is unresolvable —

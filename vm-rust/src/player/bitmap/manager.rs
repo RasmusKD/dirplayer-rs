@@ -1,12 +1,44 @@
+use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 
 use super::bitmap::Bitmap;
+
+/// A stored bitmap, or the means to decode it on first use.
+///
+/// A movie's cast is registered all at once when it loads, and decoding every
+/// JPEG member then (141 of them in one measured title movie, ~120 ms of the
+/// load) paid for pictures the first frames never show. A lazy slot keeps
+/// the compressed source and decodes when the bitmap is first read.
+struct Slot {
+    bitmap: OnceCell<Bitmap>,
+    decode: Cell<Option<Box<dyn FnOnce() -> Bitmap>>>,
+}
+
+impl Slot {
+    fn ready(bitmap: Bitmap) -> Self {
+        let cell = OnceCell::new();
+        let _ = cell.set(bitmap);
+        Self { bitmap: cell, decode: Cell::new(None) }
+    }
+
+    fn get(&self) -> &Bitmap {
+        self.bitmap.get_or_init(|| match self.decode.take() {
+            Some(decode) => decode(),
+            None => Bitmap::new(1, 1, 8, 8, 0, super::bitmap::PaletteRef::BuiltIn(super::bitmap::BuiltInPalette::GrayScale)),
+        })
+    }
+
+    fn get_mut(&mut self) -> &mut Bitmap {
+        self.get();
+        self.bitmap.get_mut().expect("slot decoded above")
+    }
+}
 
 pub type BitmapRef = u32;
 pub const INVALID_BITMAP_REF: BitmapRef = 0;
 
 pub struct BitmapManager {
-    bitmaps: HashMap<BitmapRef, Bitmap>,
+    bitmaps: HashMap<BitmapRef, Slot>,
     ref_counter: BitmapRef,
     /// Side table for ephemeral bitmaps — those produced by Lingo getters
     /// like `(the stage).image`, `image(w, h, d)`, `bitmap.duplicate()`,
@@ -46,7 +78,17 @@ impl BitmapManager {
         self.ref_counter += 1;
 
         let bitmap_ref = self.ref_counter;
-        self.bitmaps.insert(bitmap_ref, bitmap);
+        self.bitmaps.insert(bitmap_ref, Slot::ready(bitmap));
+        bitmap_ref
+    }
+
+    /// Register an anchored bitmap that is decoded the first time it is read.
+    /// `decode` must return a bitmap even when the source is bad (a
+    /// placeholder), as an eager load would have stored.
+    pub fn add_lazy_bitmap(&mut self, decode: Box<dyn FnOnce() -> Bitmap>) -> BitmapRef {
+        self.ref_counter += 1;
+        let bitmap_ref = self.ref_counter;
+        self.bitmaps.insert(bitmap_ref, Slot { bitmap: OnceCell::new(), decode: Cell::new(Some(decode)) });
         bitmap_ref
     }
 
@@ -59,7 +101,7 @@ impl BitmapManager {
         self.ref_counter += 1;
 
         let bitmap_ref = self.ref_counter;
-        self.bitmaps.insert(bitmap_ref, bitmap);
+        self.bitmaps.insert(bitmap_ref, Slot::ready(bitmap));
         // Start at 0 — the caller's `alloc_datum(Datum::BitmapRef(...))` will
         // bump it via `incref_ephemeral`. If for some reason the bitmap is
         // never wrapped in a DatumRef the entry leaks, but that's rare and
@@ -71,22 +113,26 @@ impl BitmapManager {
     pub fn replace_bitmap(&mut self, bitmap_ref: BitmapRef, mut bitmap: Bitmap) {
         // Increment version to indicate the bitmap has changed
         // This allows texture caches to know when to re-upload
-        if let Some(old_bitmap) = self.bitmaps.get(&bitmap_ref) {
-            bitmap.version = old_bitmap.version.wrapping_add(1);
+        if let Some(old) = self.bitmaps.get(&bitmap_ref) {
+            // A still-undecoded bitmap has version 0 either way.
+            if let Some(old_bitmap) = old.bitmap.get() {
+                bitmap.version = old_bitmap.version.wrapping_add(1);
+            }
         }
-        self.bitmaps.insert(bitmap_ref, bitmap);
+        self.bitmaps.insert(bitmap_ref, Slot::ready(bitmap));
     }
 
     #[allow(dead_code)]
     pub fn get_bitmap(&self, bitmap_ref: BitmapRef) -> Option<&Bitmap> {
-        self.bitmaps.get(&bitmap_ref)
+        self.bitmaps.get(&bitmap_ref).map(Slot::get)
     }
 
     #[allow(dead_code)]
     pub fn get_bitmap_mut(&mut self, bitmap_ref: BitmapRef) -> Option<&mut Bitmap> {
         // Increment version when giving mutable access, as the bitmap may be modified
         // This ensures texture caches know to re-upload the texture
-        if let Some(bitmap) = self.bitmaps.get_mut(&bitmap_ref) {
+        if let Some(slot) = self.bitmaps.get_mut(&bitmap_ref) {
+            let bitmap = slot.get_mut();
             bitmap.version = bitmap.version.wrapping_add(1);
             Some(bitmap)
         } else {
