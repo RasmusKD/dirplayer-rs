@@ -4319,6 +4319,32 @@ pub async fn player_call_global_handler(
         Ok(None) => {}
     }
 
+    // Command form of an Xtra instance method, `displayOpen(fileObj)`: the
+    // handlers that wait on the page (file dialogs) are awaited here, as the
+    // method form `fileObj.displayOpen()` does. The sync fallback in the
+    // built-in handlers cannot wait.
+    if let Some(first) = args.first().filter(|_| xtra::manager::xtra_command_may_await(handler_name.as_str())) {
+        let target = reserve_player_ref(|player| {
+            player
+                .get_datum(first)
+                .to_xtra_instance()
+                .ok()
+                .map(|(name, id)| (name.to_owned(), *id))
+        });
+        if let Some((xtra_name, instance_id)) = target {
+            if xtra::manager::xtra_instance_command_must_await(&xtra_name, handler_name.as_str()) {
+                let rest = args[1..].to_vec();
+                return Box::pin(xtra::manager::call_xtra_instance_async_handler(
+                    &xtra_name,
+                    instance_id,
+                    handler_name.as_str(),
+                    &rest,
+                ))
+                .await;
+            }
+        }
+    }
+
     if BuiltInHandlerManager::has_async_handler(handler_name) {
         return Box::pin(BuiltInHandlerManager::call_async_handler(
             handler_name,
