@@ -188,7 +188,11 @@ impl KeyboardManager {
         if let Some(ch) = Self::director_char_for(key) {
             return ch.to_string();
         }
-        if key.len() == 1 && key.as_bytes()[0] < 0x80 {
+        // A typed character, ASCII or not (a layout's letters such as a
+        // Nordic keyboard's own vowels are single keys too). Key NAMES such as
+        // "Shift" or "F1" are longer and have no character.
+        let mut chars = key.chars();
+        if chars.next().is_some() && chars.next().is_none() {
             key.clone()
         } else {
             "".to_string()
@@ -224,6 +228,15 @@ mod tests {
         assert_eq!(kb.key_code(), code);
         assert!(!kb.is_key_down(" "));
         assert_eq!(kb.key_pressed(), "", "keyPressed is about keys still down");
+    }
+
+    #[test]
+    fn a_non_ascii_character_is_the_key() {
+        let mut kb = KeyboardManager::new();
+        kb.key_down("\u{f8}".to_string(), 216);
+        assert_eq!(kb.key(), "\u{f8}");
+        kb.key_down("Shift".to_string(), 16);
+        assert_eq!(kb.key(), "", "a key name is not a character");
     }
 
     #[test]
