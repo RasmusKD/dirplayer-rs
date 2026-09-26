@@ -194,6 +194,30 @@ pub fn canvas_to_movie_coords(player: &DirPlayer, x: f64, y: f64) -> (f64, f64) 
     }
 }
 
+/// Inverse of `canvas_to_movie_coords` for a whole rect: a movie-space
+/// [left, top, right, bottom] mapped into host-canvas coordinates through the
+/// drawRect scaling.
+pub fn movie_rect_to_canvas(
+    rect: [f64; 4],
+    draw_rect: [f64; 4],
+    movie_w: f64,
+    movie_h: f64,
+) -> [f64; 4] {
+    let draw_w = (draw_rect[2] - draw_rect[0]).max(1.0);
+    let draw_h = (draw_rect[3] - draw_rect[1]).max(1.0);
+    if movie_w <= 0.0 || movie_h <= 0.0 {
+        return rect;
+    }
+    let sx = draw_w / movie_w;
+    let sy = draw_h / movie_h;
+    [
+        draw_rect[0] + rect[0] * sx,
+        draw_rect[1] + rect[1] * sy,
+        draw_rect[0] + rect[2] * sx,
+        draw_rect[1] + rect[3] * sy,
+    ]
+}
+
 pub fn get_stage_prop(player: &mut DirPlayer, prop: Symbol) -> Result<Datum, ScriptError> {
     match prop.into_builtin() {
         // A window's `movie` property is the Movie playing in it (Director 11.5
@@ -430,7 +454,20 @@ pub fn set_stage_prop(
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_stage_layout, StretchStyle};
+    use super::{compute_stage_layout, movie_rect_to_canvas, StretchStyle};
+
+    #[test]
+    fn movie_rect_maps_through_a_letterboxed_draw_rect() {
+        // 640x480 movie drawn at 1000x750 starting 125 px down.
+        let r = movie_rect_to_canvas([64.0, 48.0, 320.0, 96.0], [0.0, 125.0, 1000.0, 875.0], 640.0, 480.0);
+        assert_eq!(r, [100.0, 200.0, 500.0, 275.0]);
+    }
+
+    #[test]
+    fn movie_rect_is_unchanged_at_one_to_one() {
+        let r = movie_rect_to_canvas([10.0, 20.0, 30.0, 40.0], [0.0, 0.0, 640.0, 480.0], 640.0, 480.0);
+        assert_eq!(r, [10.0, 20.0, 30.0, 40.0]);
+    }
 
     #[test]
     fn stretch_meet_letterboxes_inside_stage() {

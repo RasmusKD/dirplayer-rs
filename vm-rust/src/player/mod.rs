@@ -40,6 +40,7 @@ pub mod net_manager;
 pub mod net_task;
 pub mod profiling;
 pub mod scope;
+pub mod text_entry_members;
 pub mod score;
 pub mod script;
 pub mod script_ref;

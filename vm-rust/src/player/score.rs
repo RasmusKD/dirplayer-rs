@@ -5663,7 +5663,7 @@ pub fn is_active_sprite(player: &DirPlayer, sprite: &Sprite) -> bool {
 /// Clicks pass through them to the sprite underneath (e.g. a button).
 /// Only sprite behavior scripts that actually define mouse handlers
 /// (mouseDown, mouseUp, mouseUpOutSide) prevent pass-through.
-fn is_click_transparent_sprite(player: &DirPlayer, sprite: &Sprite) -> bool {
+pub(crate) fn is_click_transparent_sprite(player: &DirPlayer, sprite: &Sprite) -> bool {
     if sprite.editable {
         return false;
     }
