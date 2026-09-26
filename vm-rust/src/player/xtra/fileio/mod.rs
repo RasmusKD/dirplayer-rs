@@ -110,6 +110,19 @@ fn record_file_meta(file_name: &str) {
     }
 }
 
+/// Text as a file written by Director holds it: in the Windows code page
+/// (CP1252), the encoding the reads below fall back to and the one a
+/// projector's files are in, so a file saved here opens in the original
+/// program too. Text with characters CP1252 cannot hold stays UTF-8 rather
+/// than lose them.
+fn encode_file_text(text: &str) -> Vec<u8> {
+    let cp1252: Option<Vec<u8>> = text
+        .chars()
+        .map(crate::io::encoding::char_to_win1252_byte)
+        .collect();
+    cp1252.unwrap_or_else(|| text.as_bytes().to_vec())
+}
+
 fn persist_storage_key(file_name: &str) -> String {
     let base = file_name
         .rsplit(['\\', '/'])
@@ -752,7 +765,8 @@ impl FileIoXtraManager {
                 })?;
                 let instance = manager.instances.get_mut(&instance_id).unwrap();
                 if instance.is_open {
-                    let bytes = text.as_bytes();
+                    let encoded = encode_file_text(&text);
+                    let bytes = encoded.as_slice();
                     // Insert at position (overwrite or extend)
                     if instance.position >= instance.data.len() {
                         instance.data.extend_from_slice(bytes);
@@ -780,7 +794,7 @@ impl FileIoXtraManager {
                 })?;
                 let instance = manager.instances.get_mut(&instance_id).unwrap();
                 if instance.is_open && !ch.is_empty() {
-                    let byte = ch.as_bytes()[0];
+                    let byte = encode_file_text(&ch)[0];
                     if instance.position >= instance.data.len() {
                         instance.data.push(byte);
                     } else {
@@ -973,3 +987,18 @@ pub fn borrow_fileio_manager_mut<T>(
     callback(manager)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::encode_file_text;
+
+    #[test]
+    fn file_text_is_written_in_the_windows_code_page() {
+        assert_eq!(
+            encode_file_text("S\u{f8}ren \u{e6}\u{e5}"),
+            vec![b'S', 0xF8, b'r', b'e', b'n', b' ', 0xE6, 0xE5]
+        );
+        assert_eq!(encode_file_text("plain"), b"plain".to_vec());
+        // Not representable in CP1252: kept as UTF-8, nothing lost.
+        assert_eq!(encode_file_text("\u{3b1}"), "\u{3b1}".as_bytes().to_vec());
+    }
+}
