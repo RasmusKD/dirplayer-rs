@@ -76,7 +76,7 @@ pub fn mask_patterns(mask: &str) -> Vec<String> {
     patterns
 }
 
-/// The extensions the patterns name, like "mim" for "*.mim", for the
+/// The extensions the patterns name, like "sav" for "*.sav", for the
 /// browser's own file picker.
 pub fn mask_extensions(patterns: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -189,12 +189,12 @@ mod tests {
 
     #[test]
     fn windows_mask_pairs() {
-        let p = mask_patterns("*.MIM,*.MIM");
-        assert_eq!(p, vec!["*.mim".to_string()]);
-        assert!(name_matches("Rasmus.MIM", &p));
-        assert!(name_matches("rasmus.mim", &p));
+        let p = mask_patterns("*.SAV,*.SAV");
+        assert_eq!(p, vec!["*.sav".to_string()]);
+        assert!(name_matches("Game1.SAV", &p));
+        assert!(name_matches("game1.sav", &p));
         assert!(!name_matches("settings.txt", &p));
-        assert_eq!(mask_extensions(&p), vec!["mim".to_string()]);
+        assert_eq!(mask_extensions(&p), vec!["sav".to_string()]);
     }
 
     #[test]
