@@ -5905,7 +5905,41 @@ pub fn get_sprite_at(player: &DirPlayer, x: i32, y: i32, scripted: bool) -> Opti
 /// the "actual" sprite rect, and the scaling here just amplifies that result
 /// consistently across bitmap/text/etc.
 pub fn get_concrete_sprite_render_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect {
-    movie_rect_to_render_rect(player, get_concrete_sprite_rect(player, sprite))
+    let rect = get_concrete_sprite_rect(player, sprite);
+    let shows_bitmap = sprite
+        .member
+        .as_ref()
+        .and_then(|m| player.movie.cast_manager.find_member_by_ref(m))
+        .map_or(false, |m| matches!(m.member_type, CastMemberType::Bitmap(_)));
+    if shows_bitmap {
+        movie_rect_to_render_rect_fixed_size(player, rect)
+    } else {
+        movie_rect_to_render_rect(player, rect)
+    }
+}
+
+/// Like `movie_rect_to_render_rect`, but the size in render space depends
+/// only on the rect's size, never on where it sits. Rounding each edge on
+/// its own makes a rect's scaled width or height vary by a pixel with its
+/// position whenever the stage scale is not a whole number, so a bitmap
+/// moved by one movie pixel was drawn a row or column larger or smaller as
+/// well as moved. Here the left and top edges are snapped to a whole render
+/// pixel, and the size is the movie size times the scale, rounded once.
+pub fn movie_rect_to_render_rect_fixed_size(player: &DirPlayer, rect: IntRect) -> IntRect {
+    let (sx, sy) = crate::player::stage::stage_scale(player);
+    if (sx - 1.0).abs() < 1e-6 && (sy - 1.0).abs() < 1e-6 {
+        return rect;
+    }
+    let layout = crate::player::stage::stage_layout(player);
+    scale_movie_rect_fixed_size(rect, layout.draw_rect[0], layout.draw_rect[1], sx, sy)
+}
+
+fn scale_movie_rect_fixed_size(rect: IntRect, origin_x: f64, origin_y: f64, sx: f64, sy: f64) -> IntRect {
+    let left = (origin_x + rect.left as f64 * sx).round() as i32;
+    let top = (origin_y + rect.top as f64 * sy).round() as i32;
+    let width = ((rect.right - rect.left) as f64 * sx).round() as i32;
+    let height = ((rect.bottom - rect.top) as f64 * sy).round() as i32;
+    IntRect::from(left, top, left + width, top + height)
 }
 
 /// Maps a rect in movie coordinates into the renderer's space: offset by the
@@ -7195,7 +7229,7 @@ pub fn get_score_sprite_mut<'a>(
 
 #[cfg(test)]
 mod rect_tests {
-    use super::{normalise_rect, scale_movie_rect};
+    use super::{normalise_rect, scale_movie_rect, scale_movie_rect_fixed_size};
     use crate::player::geometry::IntRect;
 
     #[test]
@@ -7207,6 +7241,39 @@ mod rect_tests {
         assert_eq!((r.left, r.top, r.right, r.bottom), (513, 640, 751, 774));
         let centre = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
         assert_eq!(centre, (632, 707));
+    }
+
+    #[test]
+    fn a_bitmap_rect_keeps_its_size_when_moved_by_one_pixel() {
+        // Moving by one movie pixel may only translate the render rect,
+        // never change its size, at whole and fractional stage scales.
+        for &s in &[1.0f64, 1.433, 1.4326, 1.37, 1.5, 2.0] {
+            for &(w, h) in &[(55, 19), (174, 98), (1, 1), (239, 46)] {
+                let base = scale_movie_rect_fixed_size(IntRect::from(100, 200, 100 + w, 200 + h), 267.0, 0.0, s, s);
+                let size = (base.width(), base.height());
+                assert_eq!(size, ((w as f64 * s).round() as i32, (h as f64 * s).round() as i32));
+                for dx in -3..=3 {
+                    for dy in -3..=3 {
+                        let (l, t) = (100 + dx, 200 + dy);
+                        let r = scale_movie_rect_fixed_size(IntRect::from(l, t, l + w, t + h), 267.0, 0.0, s, s);
+                        assert_eq!((r.width(), r.height()), size, "scale {} size {}x{} moved {},{}", s, w, h, dx, dy);
+                        assert_eq!(r.left, (267.0 + l as f64 * s).round() as i32);
+                        assert_eq!(r.top, (t as f64 * s).round() as i32);
+                    }
+                }
+            }
+        }
+        // The edge-rounded rect does vary, which is the artifact this avoids.
+        let heights: std::collections::HashSet<i32> = (500..510)
+            .map(|t| scale_movie_rect(IntRect::from(143, t, 198, t + 19), 0.0, 0.0, 1.4326, 1.4326).height())
+            .collect();
+        assert!(heights.len() > 1);
+    }
+
+    #[test]
+    fn a_fixed_size_rect_matches_at_scale_one() {
+        let r = scale_movie_rect_fixed_size(IntRect::from(367, 467, 541, 565), 0.0, 0.0, 1.0, 1.0);
+        assert_eq!((r.left, r.top, r.right, r.bottom), (367, 467, 541, 565));
     }
 
     #[test]
