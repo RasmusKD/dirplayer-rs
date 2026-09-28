@@ -4565,6 +4565,39 @@ fn sprite_set_prop_is_noop(
     })
 }
 
+/// Height of a score-placed `#adjust` text sprite whose member carries an
+/// authored height.
+///
+/// Text with explicit breaks keeps the authored height: it is the laid-out
+/// total Director stored. A single wrapped paragraph keeps the authored
+/// height while the measurement is within 30 % of it, which absorbs
+/// bitmap-font metrics that run a few pixels taller than Director's.
+///
+/// That tolerance does not apply when the lines were counted with the
+/// renderer's own Canvas2D wrap: a taller measurement then means lines the
+/// renderer will draw below the box. Measured on a Verdana 24 bold
+/// paragraph whose member was authored three lines tall (87) and filled at
+/// run time with text that wraps to four (116): Director grows the box and
+/// shows the fourth line, the tolerance kept 87 and clipped it.
+pub fn adjust_text_box_height(
+    authored: i32,
+    measured: Option<i32>,
+    text_has_breaks: bool,
+    measured_like_renderer: bool,
+) -> i32 {
+    if text_has_breaks {
+        return authored;
+    }
+    let measured = measured.unwrap_or(authored);
+    if measured_like_renderer && measured > authored {
+        return measured;
+    }
+    if (authored as u32) * 10 >= (measured as u32) * 7 {
+        authored
+    } else {
+        measured.max(authored)
+    }
+}
 
 /// A rect with its corners the right way round, as Director keeps them:
 /// rect(10, 50, 12, 20) and rect(10, 20, 12, 50) are the same rect.
@@ -6590,6 +6623,10 @@ pub fn get_concrete_sprite_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect 
                 !player.font_manager.font_cache.contains_key(&cache_key)
             };
 
+            // True when the height below comes from the system-font estimate,
+            // which counts lines with the renderer's own Canvas2D wrap rather
+            // than with bitmap-font metrics.
+            let mut measured_like_renderer = false;
             let measured_height = if text_width > 0 {
                 use crate::player::font::{measure_text, measure_text_wrapped, FontManager};
                 let cache_key = FontManager::cache_key(&text_member.font);
@@ -6642,6 +6679,7 @@ pub fn get_concrete_sprite_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect 
                         ).1 as i32
                     }
                 }).filter(|h| *h > 0);
+                measured_like_renderer = from_bitmap.is_none();
 
                 from_bitmap.or_else(|| {
                     // System-font estimate: prefer fixed_line_space (only set
@@ -6826,16 +6864,12 @@ pub fn get_concrete_sprite_rect(player: &DirPlayer, sprite: &Sprite) -> IntRect 
                 // pixels of the last line may be cut, but layout
                 // adjacency is preserved (Junkbot credits: stored 375
                 // matches Director, our re-measure 414 would inflate).
-                if text_has_breaks {
-                    preferred_authored
-                } else {
-                    let measured_h = measured_height.unwrap_or(preferred_authored);
-                    if (preferred_authored as u32) * 10 >= (measured_h as u32) * 7 {
-                        preferred_authored
-                    } else {
-                        measured_h.max(preferred_authored)
-                    }
-                }
+                adjust_text_box_height(
+                    preferred_authored,
+                    measured_height,
+                    text_has_breaks,
+                    measured_like_renderer,
+                )
             } else if text_member.box_type == BuiltInSymbol::Adjust {
                 match measured_height {
                     Some(m) if m > stored_height => m,
@@ -7286,6 +7320,22 @@ mod rect_tests {
     fn inverted_corners_are_swapped() {
         assert_eq!(normalise_rect([10, 50, 12, 20]), [10, 20, 12, 50]);
         assert_eq!(normalise_rect([12, 20, 10, 50]), [10, 20, 12, 50]);
+    }
+
+    #[test]
+    fn an_adjust_paragraph_grows_to_the_lines_the_renderer_draws() {
+        use super::adjust_text_box_height;
+        // Authored three lines of 29 px, filled with text that wraps to four.
+        assert_eq!(adjust_text_box_height(87, Some(116), false, true), 116);
+        // Same numbers from bitmap-font metrics: within the tolerance.
+        assert_eq!(adjust_text_box_height(87, Some(116), false, false), 87);
+        // Text with explicit breaks keeps the stored layout either way.
+        assert_eq!(adjust_text_box_height(87, Some(116), true, true), 87);
+        // Never shrinks below the authored box.
+        assert_eq!(adjust_text_box_height(116, Some(87), false, true), 116);
+        assert_eq!(adjust_text_box_height(116, None, false, true), 116);
+        // A far taller measurement grows on either path.
+        assert_eq!(adjust_text_box_height(36, Some(108), false, false), 108);
     }
 
     #[test]
