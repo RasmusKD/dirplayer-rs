@@ -1431,6 +1431,57 @@ impl DirPlayer {
         self.wants_pointer_lock = false;
     }
 
+    /// Free the bitmaps of the movie that is being replaced. Its cast members
+    /// own their pictures, but the pixels live in `bitmap_manager`, which
+    /// nothing emptied on a movie switch: every movie visited stayed decoded
+    /// in memory for the rest of the session (20 to 70 MB per switch, over a
+    /// gigabyte after a dozen switches). Called before the next movie's cast
+    /// is built. Kept: what can still be reached after the switch, namely
+    /// bitmaps held by a live datum (a global or a script instance property
+    /// holding an image), the system font, the stage image and the per-sprite
+    /// and per-member frame buffers, which are refilled in place.
+    fn release_previous_movie_bitmaps(&mut self) {
+        // The previous movie's fonts go with its cast. Clearing them here
+        // (load_movie_from_dir clears them again before loading the new
+        // cast's fonts) lets their glyph sheets be freed with the rest.
+        self.font_manager.clear_movie_fonts();
+        let mut keep: std::collections::HashSet<bitmap::manager::BitmapRef> =
+            std::collections::HashSet::new();
+        for (_, entry) in self.allocator.datums.iter() {
+            if let Datum::BitmapRef(r) = &entry.datum {
+                keep.insert(*r);
+            }
+        }
+        if let Some(font) = &self.font_manager.system_font {
+            keep.insert(font.bitmap_ref);
+        }
+        keep.extend(self.font_manager.fonts.values().map(|f| f.bitmap_ref));
+        keep.extend(self.font_manager.font_cache.values().map(|f| f.bitmap_ref));
+        keep.extend(self.stage_image);
+        keep.extend(self.flash_frame_buffers.values().copied());
+        keep.extend(self.w3d_frame_buffers.values().copied());
+        keep.extend(self.nested_movie_images.values().copied());
+        let (freed, bytes) = self.bitmap_manager.retain_only(&keep);
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "[MOVIE-SWITCH] freed {} bitmaps ({:.1} MB) of the previous movie",
+            freed,
+            bytes as f64 / 1048576.0,
+        )));
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (freed, bytes);
+        // The renderer's textures and rendered text were made from those
+        // bitmaps; drop them now instead of waiting for LRU eviction.
+        if unsafe { ACTIVE_PLAYER_ID } == 0 {
+            with_renderer_mut(|renderer_opt| {
+                if let Some(renderer) = renderer_opt {
+                    use crate::rendering_gpu::Renderer;
+                    renderer.reset_for_new_movie();
+                }
+            });
+        }
+    }
+
     pub(crate) async fn load_movie_from_dir(&mut self, dir: DirectorFile) {
         // Start this movie from the builtin display-spelling baseline. A cast's
         // name table claims the spelling for symbols it defines
@@ -1450,6 +1501,7 @@ impl DirPlayer {
         // member numbers: the map's planet and smoke frames turned up on a
         // task scene's craftsman and plank piles.
         crate::player::gif::forget_all(self);
+        self.release_previous_movie_bitmaps();
         self.reset_cursor_for_new_movie();
         self.movie
             .load_from_file(
