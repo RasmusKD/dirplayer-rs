@@ -132,14 +132,60 @@ fn persist_storage_key(file_name: &str) -> String {
     format!("dirplayer.fileio.{}", base)
 }
 
-fn persist_file(file_name: &str, data: &[u8]) {
+/// Store a file in the browser so it survives a reload, and tell the page
+/// whether that worked. A failed write (storage full, or storage blocked as in
+/// some private windows) used to be dropped silently: the movie carried on as
+/// if the file were saved, and the player learned otherwise only on the next
+/// visit. The page now hears about every attempt through a
+/// `dirplayer:filePersist` event on `window`, whose `detail` is
+/// `{ name, ok, size }`, plus `error` (the exception's name, or
+/// "noStorage") and `bytes` (a Uint8Array copy of the file) when `ok` is
+/// false, so a host can warn and offer the file as a download. A save is
+/// several writes (createFile, each write, closeFile), so a failing save sends
+/// several events. Returns whether the file was stored.
+fn persist_file(file_name: &str, data: &[u8]) -> bool {
     use base64::Engine;
-    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(data);
-        let _ = storage.set_item(&persist_storage_key(file_name), &encoded);
+    let result: Result<(), String> =
+        match web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            Some(storage) => {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+                storage
+                    .set_item(&persist_storage_key(file_name), &encoded)
+                    .map_err(|e| {
+                        js_sys::Reflect::get(&e, &"name".into())
+                            .ok()
+                            .and_then(|n| n.as_string())
+                            .unwrap_or_else(|| "Error".to_string())
+                    })
+            }
+            None => Err("noStorage".to_string()),
+        };
+    if result.is_ok() {
+        // The file dialogs list files newest first, by the names the movie gave.
+        record_file_meta(file_name);
+    } else {
+        log::warn!("FileIO: could not store {} ({:?})", file_name, result);
     }
-    // The file dialogs list files newest first, by the names the movie gave.
-    record_file_meta(file_name);
+    dispatch_persist_event(file_name, data, &result);
+    result.is_ok()
+}
+
+fn dispatch_persist_event(file_name: &str, data: &[u8], result: &Result<(), String>) {
+    let Some(window) = web_sys::window() else { return };
+    let detail = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&detail, &"name".into(), &base_name(file_name).into());
+    let _ = js_sys::Reflect::set(&detail, &"ok".into(), &result.is_ok().into());
+    let _ = js_sys::Reflect::set(&detail, &"size".into(), &(data.len() as f64).into());
+    if let Err(error) = result {
+        let _ = js_sys::Reflect::set(&detail, &"error".into(), &error.as_str().into());
+        let bytes = js_sys::Uint8Array::from(data);
+        let _ = js_sys::Reflect::set(&detail, &"bytes".into(), &bytes);
+    }
+    let init = web_sys::CustomEventInit::new();
+    init.set_detail(&detail);
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("dirplayer:filePersist", &init) {
+        let _ = window.dispatch_event(&event);
+    }
 }
 
 fn load_persisted_file(file_name: &str) -> Option<Vec<u8>> {
