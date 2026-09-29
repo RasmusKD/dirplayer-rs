@@ -1942,7 +1942,7 @@ impl SoundChannel {
                 Err(e) => {
                     error!("❌ Failed to load sound: {}", e);
                     let mut this = self_rc.borrow_mut();
-                    this.status = SoundStatus::Idle;
+                    this.skip_unplayable();
                     return;
                 }
             };
@@ -1979,7 +1979,7 @@ impl SoundChannel {
                         error!("❌ MP3 playback failed for \"{}\": {:?} ({} bytes, first bytes {:02X?})",
                             member_name, e, mp3_data.len(), &mp3_data[0..16.min(mp3_data.len())]);
                         let mut ch = self_rc_clone.borrow_mut();
-                        ch.status = SoundStatus::Idle;
+                        ch.skip_unplayable();
                     }
                 });
                 debug!("🚀 Spawned MP3 decode task (start_sound)");
@@ -1990,7 +1990,7 @@ impl SoundChannel {
             if audio_data.samples.is_empty() {
                 error!("❌ Audio data has no samples");
                 let mut this = self_rc.borrow_mut();
-                this.status = SoundStatus::Idle;
+                this.skip_unplayable();
                 return;
             }
 
@@ -2022,7 +2022,7 @@ impl SoundChannel {
                         audio_data.samples.len(), target_sample_rate, e
                     );
                     let mut this = self_rc.borrow_mut();
-                    this.status = SoundStatus::Idle;
+                    this.skip_unplayable();
                     return;
                 }
             };
@@ -2225,7 +2225,7 @@ impl SoundChannel {
             debug!("🚀 Spawned MP3 decode task (start_sound #2)");
         } else {
             let mut this = self_rc.borrow_mut();
-            this.status = SoundStatus::Idle;
+            this.skip_unplayable();
             error!(
                 "❌ start_sound failed - couldn't get sound member (datum type: {})",
                 datum.type_str()
@@ -3768,6 +3768,31 @@ impl SoundChannel {
 
     pub fn is_busy(&self) -> bool {
         self.status != SoundStatus::Idle || self.has_pending_sound()
+    }
+
+    /// A clip that cannot start (the entry names no sound member, or its data
+    /// will not decode) is passed over as if it had ended at once, and the
+    /// channel goes on to whatever is queued after it. Left Idle with the rest
+    /// of a playlist still waiting, the channel counted as busy for good,
+    /// since a queue still to play keeps `soundBusy` true, and a frame that
+    /// waits for the channel to fall silent never moved on. The clip's own
+    /// remaining loops are dropped with it.
+    fn skip_unplayable(&mut self) {
+        self.status = SoundStatus::Idle;
+        self.source_node = None;
+        if !self.has_pending_sound() {
+            return;
+        }
+        match self.current_segment_index {
+            Some(i) => {
+                if let Some(seg) = self.playlist_segments.get_mut(i) {
+                    seg.loop_count = 1;
+                    seg.loops_remaining = 1;
+                }
+            }
+            None => self.member = None,
+        }
+        self.start_next_segment();
     }
 
     /// Something is still to play after the current clip: a queued member,
