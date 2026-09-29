@@ -6560,6 +6560,16 @@ impl WebGL2Renderer {
             } else {
                 font.char_height as i32
             };
+            // An outline font's own line (ascent + descent) at the size the
+            // atlas was drawn at; None for bitmap strikes and pixel fonts.
+            let outline_natural_line_h = if font.font_size > 0 {
+                crate::player::font::outline_auto_line_height_for_font(
+                    player, font_name, font.font_size,
+                )
+                .map(|h| (h as i32).max(line_height))
+            } else {
+                None
+            };
             // Alignment uses the full canvas width: text centered/right-
             // aligned within the sprite display rect (e.g. 348 for Habbo's
             // hotel-navigator help text). The wrap fold-point uses the
@@ -6577,7 +6587,7 @@ impl WebGL2Renderer {
             // line, so subtract member_top_spacing too — while `top_spacing`
             // (effective = member_top_spacing - scroll) keeps any scroll offset:
             //   y = top_spacing - member_top_spacing - cap_top = -scroll - cap_top.
-            let (pfr_cap_top, _pfr_desc_bottom) =
+            let (pfr_cap_top, pfr_desc_bottom) =
                 crate::player::font::pfr_strike_vertical_metrics(&font, font_bitmap);
             // Anchor the atlas cell top at the line top (keeping the natural
             // ascender-to-cap gap), matching the `.image` getter's PFR anchor
@@ -7462,6 +7472,19 @@ impl WebGL2Renderer {
                                 line_height
                             }
                         });
+                    // The glyphs hang from `y`, so a descender reaches
+                    // below the line whenever the stride is shorter than
+                    // the font's line. Record how far, so the texture trim
+                    // below keeps it: with a 24 px stride for a 24 px
+                    // outline font the trim cut the last line at its
+                    // baseline, and a y read as a v and a g as an a.
+                    // Scaled to the line's own size for runs drawn larger
+                    // or smaller than the atlas.
+                    if let (Some(db), true) = (pfr_desc_bottom, font.font_size > 0) {
+                        let size = if line.max_size > 0 { line.max_size } else { font.font_size as i32 };
+                        let reach = ((db + 1) * size + font.font_size as i32 - 1) / font.font_size as i32;
+                        last_glyph_bottom = last_glyph_bottom.max(y + reach);
+                    }
                     // top/bottom_spacing are PER-PARAGRAPH (member-level),
                     // applied above at source-paragraph transitions —
                     // intentionally NOT per-line here.
@@ -7553,7 +7576,15 @@ impl WebGL2Renderer {
                             if render_line_spacing > 0 {
                                 render_line_spacing as i32
                             } else {
-                                line_height
+                                // An outline font steps its own line, the
+                                // same `ascent - descent` that `.rect` and
+                                // `.height` size the box with. Stepping the
+                                // point size instead (24 for Verdana 24,
+                                // whose line is 29) packed each line into
+                                // the one above and left the last one
+                                // below a box sized for 29 px lines, where
+                                // its descenders were cut off.
+                                outline_natural_line_h.unwrap_or(line_height)
                             }
                         });
                     // Director-style leading: when the line cell is taller
@@ -7565,11 +7596,24 @@ impl WebGL2Renderer {
                     // glyphs are only ~16 px tall: Director draws the "1"
                     // ~5 px below the cell top, so the visible text rows
                     // sit "inside" each row rather than crowding the top.
-                    let glyph_cell_h = if font.font_size > 0 {
-                        font.font_size as i32
-                    } else {
-                        font.char_height as i32
-                    };
+                    //
+                    // The leading is what the line box holds BEYOND the
+                    // font's own line (ascent + descent), not beyond the
+                    // point size. For a bitmap strike the two are the same
+                    // and nothing moves. For an outline font the descent
+                    // lies outside the point size: Verdana 24 steps 29 px
+                    // (ascent 24, descent 5), so a fixedLineSpace of 29 is
+                    // the font's natural line and holds no leading at all.
+                    // Counting from the point size put 5 px of "leading"
+                    // above every line, the baseline on the line's bottom
+                    // row, and the descent of each line into the next one.
+                    // On the last line of an #adjust box sized to lines x
+                    // fixedLineSpace that descent fell outside the box, so
+                    // g, p, j and y lost their tails and a comma read as a
+                    // full stop. The box Director authored for that member
+                    // is exactly lines x fixedLineSpace, which only holds
+                    // the last line when its descent stays inside the line.
+                    let glyph_cell_h = outline_natural_line_h.unwrap_or(line_height);
                     let leading_top = (effective_lh - glyph_cell_h).max(0);
                     render_line(line, y + leading_top, &mut text_bitmap);
                     // Track the max glyph extent (including descender). The
