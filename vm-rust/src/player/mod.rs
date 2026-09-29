@@ -6291,13 +6291,9 @@ pub async fn run_single_frame() -> (bool, bool) {
         return (is_playing, is_script_paused);
     }
 
-    let (has_player_frame_changed, has_frame_changed_in_go, go_direction) =
+    let (has_player_frame_changed, has_frame_changed_in_go) =
         reserve_player_ref(|player| {
-            (
-                player.has_player_frame_changed,
-                player.has_frame_changed_in_go,
-                player.go_direction
-            )
+            (player.has_player_frame_changed, player.has_frame_changed_in_go)
         });
 
     player_wait_available().await;
@@ -6332,23 +6328,16 @@ pub async fn run_single_frame() -> (bool, bool) {
     if has_player_frame_changed {
         player_wait_available().await;
 
-        if has_frame_changed_in_go && go_direction == 1 { // backwards
-            dispatch_event_to_all_behaviors(Symbol::builtin(BuiltInSymbol::ExitFrame), &vec![]).await;
-        } else {
-            // Forward advance/go: the arriving (or looping-in-place) frame's sprite
-            // BEHAVIORS were never sent exitFrame here — only the frame+movie scripts ran —
-            // so a sprite's FIRST exitFrame on the frame it lands on was lost (Director fires
-            // beginSprite -> enterFrame -> exitFrame in one frame visit; e.g. a RaycastCar's
-            // updateWheelModels ran a frame late, leaving its wheels in the hover-ray path).
-            // Dispatch the behaviors' exitFrame first (matching the backwards-go branch and
-            // the stayed-on-frame else branch below), then the frame+movie script exitFrames.
-            dispatch_event_to_all_behaviors(Symbol::from_str(&"exitFrame".to_string()), &vec![]).await;
-            if let Err(err) = player_invoke_frame_and_movie_scripts(Symbol::from_str(&"exitFrame".to_string()), &vec![]).await {
-                if err.code != ScriptErrorCode::Abort {
-                    reserve_player_mut(|player| player.on_script_error(&err));
-                }
-            }
-        }
+        // The frame the playhead landed on (forward or backward go, or an
+        // advance) gets its exitFrame here, once. Sprite behaviors come
+        // first, then the frame script and the movie scripts: the behavior
+        // dispatch ends with those itself. Calling the frame and movie scripts
+        // again after it delivered their exitFrame twice, and when the first
+        // delivery ran a go() the second one reached the NEXT frame's script
+        // before that frame was ever shown. A frame script that starts a sound
+        // on exitFrame then started it there and again on the following tick,
+        // so the clip was heard to start, cut off and restart.
+        dispatch_event_to_all_behaviors(Symbol::builtin(BuiltInSymbol::ExitFrame), &vec![]).await;
 
         player_wait_available().await;
 
@@ -8286,6 +8275,111 @@ mod handler_gap_tests {
             });
             let released = timeout(Duration::from_millis(200), wait_for_handler_gap()).await;
             assert!(released.is_ok());
+        });
+    }
+}
+
+#[cfg(test)]
+mod landed_frame_exit_tests {
+    use super::*;
+    use crate::director::chunks::handler::{Bytecode, HandlerDef};
+    use crate::director::chunks::script::ScriptChunk;
+    use crate::director::enums::ScriptType;
+    use crate::director::lingo::datum::Datum;
+    use crate::director::lingo::opcode::OpCode;
+    use crate::player::cast_lib::{CastLib, CastLibState};
+    use crate::player::cast_lib::CastMemberRef;
+    use std::cell::RefCell;
+    use crate::player::script::Script;
+    use crate::player::testing::{run_test, TestPlayer};
+
+    /// A cast whose one movie script counts its exitFrame calls in a global:
+    /// `on exitFrame` / `gExits = gExits + 1`.
+    fn counting_cast() -> CastLib {
+        let exit_frame = Symbol::from_str("exitFrame");
+        let counter = Symbol::from_str("gExits");
+        let handler = HandlerDef {
+            name_id: 0,
+            bytecode_array: vec![
+                Bytecode::new(OpCode::GetGlobal, 1, 0),
+                Bytecode::new(OpCode::PushInt8, 1, 1),
+                Bytecode::new(OpCode::Add, 0, 2),
+                Bytecode::new(OpCode::SetGlobal, 1, 3),
+                Bytecode::new(OpCode::Ret, 0, 4),
+            ],
+            bytecode_index_map: FxHashMap::default(),
+            argument_name_ids: vec![],
+            local_name_ids: vec![],
+            global_name_ids: vec![1],
+            compiled_ir: std::cell::RefCell::new(None),
+        };
+        let member_ref = CastMemberRef { cast_lib: 1, cast_member: 1 };
+        let mut handlers = FxHashMap::default();
+        handlers.insert(exit_frame, Rc::new(handler));
+        let script = Script {
+            member_ref,
+            name: "counter".to_string(),
+            chunk: ScriptChunk {
+                script_number: 1,
+                literals: vec![],
+                handlers: vec![],
+                property_name_ids: vec![],
+                property_defaults: Default::default(),
+            },
+            script_type: ScriptType::Movie,
+            handlers,
+            handler_names_raw: vec!["exitFrame".to_string()],
+            handler_names: vec![exit_frame],
+            properties: RefCell::new(FxHashMap::default()),
+        };
+        let mut scripts = FxHashMap::default();
+        scripts.insert(1, Rc::new(script));
+        CastLib {
+            name: "Internal".to_string(),
+            file_name: String::new(),
+            number: 1,
+            is_external: false,
+            state: CastLibState::Loaded,
+            lctx: None,
+            members: FxHashMap::default(),
+            scripts,
+            name_symbols: vec![exit_frame, counter],
+            preload_mode: 0,
+            capital_x: false,
+            dir_version: 0,
+            palette_id_offset: 0,
+            name_index: RefCell::new(None),
+            font_table: Default::default(),
+        }
+    }
+
+    /// A go() moves the playhead at once; the tick after it delivers the
+    /// landed frame's exitFrame. The movie scripts must get it once, not once
+    /// from the behavior dispatch and once more from a separate frame and
+    /// movie script call.
+    #[test]
+    fn a_frame_reached_by_go_gets_one_exit_frame() {
+        init_symbol_table();
+        run_test(async {
+            let _p = TestPlayer::new();
+            reserve_player_mut(|p| {
+                p.movie.cast_manager.casts.push(counting_cast());
+                p.movie.cast_manager.clear_movie_script_cache();
+                let zero = p.alloc_datum(Datum::Int(0));
+                p.globals.insert(Symbol::from_str("gExits"), zero);
+                p.is_playing = true;
+                p.is_script_paused = false;
+                p.movie.current_frame = 2;
+                p.has_player_frame_changed = true;
+                p.has_frame_changed_in_go = true;
+                p.go_direction = 2;
+            });
+            run_single_frame().await;
+            let exits = reserve_player_ref(|p| {
+                let r = p.globals.get(&Symbol::from_str("gExits")).unwrap().clone();
+                p.get_datum(&r).int_value().unwrap()
+            });
+            assert_eq!(exits, 1, "the landed frame's exitFrame reached the movie scripts {} times", exits);
         });
     }
 }
