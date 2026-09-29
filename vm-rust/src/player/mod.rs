@@ -907,7 +907,7 @@ impl DirPlayer {
             startup_go: None,
             env_overrides: EnvOverrides::default(),
             console: console::ConsoleBuffer::new(),
-            rng: rand::rngs::SmallRng::seed_from_u64(0),
+            rng: session_rng(),
         };
 
         result.reset();
@@ -5927,6 +5927,25 @@ async fn transition_to_net_movie(task_id: u32, target: MovieFrameTarget) {
         reserve_player_mut(|player| {
             player.is_in_transition = false;
         });
+    }
+}
+
+/// The generator behind `random()` while the movie has not set
+/// `the randomSeed`. Director seeds it from the clock when the player starts,
+/// so each session draws differently; a fixed seed gave every page load the
+/// same sequence, so the same "random" tasks came up every time the game was
+/// opened. Setting `the randomSeed` still switches `random()` to the movie's
+/// own deterministic sequence (`Movie::next_random_int`). Native builds keep
+/// seed 0 so the test suites replay identically.
+fn session_rng() -> rand::rngs::SmallRng {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let seed = getrandom::u64().unwrap_or_else(|_| js_sys::Date::now().to_bits());
+        rand::rngs::SmallRng::seed_from_u64(seed)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        rand::rngs::SmallRng::seed_from_u64(0)
     }
 }
 
