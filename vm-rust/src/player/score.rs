@@ -5997,6 +5997,19 @@ fn scale_movie_rect(rect: IntRect, origin_x: f64, origin_y: f64, sx: f64, sy: f6
     )
 }
 
+/// Line stride of an outline font's line that has no fixedLineSpace and no
+/// per-paragraph spacing: the font's own line (ascent + descent) or the point
+/// size plus the bottom spacing, whichever is larger.
+///
+/// Verdana 24 has a 29 px line. With no bottom spacing the point size alone
+/// (24) packed each line into the one above, so the font's line wins. With
+/// 5 px bottom spacing the point-size rule already gives 29, and adding the
+/// spacing on top of the font's line (34) made a three-line paragraph 15 px
+/// taller than the box it was authored in, cutting off its last descenders.
+pub fn auto_outline_line_step(font_line: i32, point_size: i32, bottom_spacing: i32) -> i32 {
+    font_line.max(point_size + bottom_spacing)
+}
+
 /// Height of the box a clipped (#fixed, #scroll, #limit) text member is drawn
 /// into, in render pixels. The member's authored height is in movie pixels,
 /// like its fixedLineSpace, while the text itself is rasterized at the stage
@@ -7286,7 +7299,7 @@ pub fn get_score_sprite_mut<'a>(
 
 #[cfg(test)]
 mod rect_tests {
-    use super::{clipped_text_box_render_height, normalise_rect, scale_movie_rect, scale_movie_rect_fixed_size};
+    use super::{auto_outline_line_step, clipped_text_box_render_height, normalise_rect, scale_movie_rect, scale_movie_rect_fixed_size};
     use crate::player::geometry::IntRect;
 
     #[test]
@@ -7325,6 +7338,19 @@ mod rect_tests {
             .map(|t| scale_movie_rect(IntRect::from(143, t, 198, t + 19), 0.0, 0.0, 1.4326, 1.4326).height())
             .collect();
         assert!(heights.len() > 1);
+    }
+
+    #[test]
+    fn an_outline_line_steps_its_own_line_or_the_point_size_and_spacing() {
+        // Verdana 24 (line 29) without bottom spacing steps its own line.
+        assert_eq!(auto_outline_line_step(29, 24, 0), 29);
+        // With 5 px bottom spacing it still steps 29, not 29 + 5: three
+        // lines fill the 5 + 87 px box the paragraph was authored in.
+        assert_eq!(auto_outline_line_step(29, 24, 5), 29);
+        // Spacing beyond the descent still opens the lines up.
+        assert_eq!(auto_outline_line_step(29, 24, 10), 34);
+        // Scaled to a stage drawn 2.8x (68 pt, line 82, spacing 14).
+        assert_eq!(auto_outline_line_step(82, 68, 14), 82);
     }
 
     #[test]

@@ -7636,7 +7636,26 @@ impl WebGL2Renderer {
                     // adding it to the per-line step would stack extra
                     // space between every line (visible as "Enter creates
                     // a new line way below the previous one").
-                    let line_step = effective_lh + bottom_spacing as i32;
+                    //
+                    // A line with no fixed or per-paragraph spacing steps
+                    // the larger of the outline font's own line and the
+                    // point size plus bottom spacing. The point-size rule
+                    // is what a 24 pt paragraph with 5 px bottom spacing
+                    // was authored against (three lines in 5 + 3 x 29);
+                    // stepping 29 + 5 pushed its third line's descenders
+                    // out of that box.
+                    let auto_outline_step = per_line_spacing.is_none()
+                        && render_line_spacing == 0
+                        && outline_natural_line_h.is_some();
+                    let line_step = if auto_outline_step {
+                        crate::player::score::auto_outline_line_step(
+                            effective_lh,
+                            line_height,
+                            bottom_spacing as i32,
+                        )
+                    } else {
+                        effective_lh + bottom_spacing as i32
+                    };
                     if DEBUG_WEBGL2_TEXT && is_pfr_font {
                         debug!(
                             "[webgl2.text.pfr.simple] step={} next_y={} h={}",
