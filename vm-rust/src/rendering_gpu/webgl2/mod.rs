@@ -2313,14 +2313,16 @@ impl WebGL2Renderer {
                         // Safety net: if member.height looks like a per-
                         // line stride (≈ fixed_line_space and < line_count
                         // strides), fall back to line_count × stride.
-                        let mh = text_member.height as i32;
-                        let fls = text_member.fixed_line_space as i32;
-                        let strides = fls.max(1) * _line_count;
-                        if fls > 0 && mh > 0 && mh + 2 < strides {
-                            strides
-                        } else {
-                            mh.max(1)
-                        }
+                        //
+                        // Both are movie pixels while the text is drawn at
+                        // the stage scale, so the box is scaled with it.
+                        let (_, scale_y) = crate::player::stage::stage_scale(player);
+                        crate::player::score::clipped_text_box_render_height(
+                            text_member.height as i32,
+                            text_member.fixed_line_space as i32,
+                            _line_count,
+                            scale_y,
+                        )
                     } else {
                         sprite_rect.height().max(1)
                     };

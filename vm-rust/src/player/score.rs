@@ -5997,6 +5997,29 @@ fn scale_movie_rect(rect: IntRect, origin_x: f64, origin_y: f64, sx: f64, sy: f6
     )
 }
 
+/// Height of the box a clipped (#fixed, #scroll, #limit) text member is drawn
+/// into, in render pixels. The member's authored height is in movie pixels,
+/// like its fixedLineSpace, while the text itself is rasterized at the stage
+/// scale. Taken unscaled, a 34 px box drawn at 2.8x kept 34 device rows for
+/// glyphs 68 rows tall, and every line was cut through its middle.
+///
+/// When the stored height looks like one line's stride rather than the whole
+/// box (shorter than `line_count` strides), the box is that many strides.
+pub fn clipped_text_box_render_height(
+    member_height: i32,
+    fixed_line_space: i32,
+    line_count: i32,
+    scale: f64,
+) -> i32 {
+    let strides = fixed_line_space.max(1) * line_count.max(1);
+    let movie_h = if fixed_line_space > 0 && member_height > 0 && member_height + 2 < strides {
+        strides
+    } else {
+        member_height.max(1)
+    };
+    ((movie_h as f64) * scale).round().max(1.0) as i32
+}
+
 /// Height in pixels of a field's laid-out text, wrapped at the box's inner
 /// content width (`field_width` minus `extras`). `None` when the field is empty
 /// or nothing could be measured.
@@ -7263,7 +7286,7 @@ pub fn get_score_sprite_mut<'a>(
 
 #[cfg(test)]
 mod rect_tests {
-    use super::{normalise_rect, scale_movie_rect, scale_movie_rect_fixed_size};
+    use super::{clipped_text_box_render_height, normalise_rect, scale_movie_rect, scale_movie_rect_fixed_size};
     use crate::player::geometry::IntRect;
 
     #[test]
@@ -7302,6 +7325,25 @@ mod rect_tests {
             .map(|t| scale_movie_rect(IntRect::from(143, t, 198, t + 19), 0.0, 0.0, 1.4326, 1.4326).height())
             .collect();
         assert!(heights.len() > 1);
+    }
+
+    #[test]
+    fn a_clipped_text_box_grows_with_the_stage_scale() {
+        // One line of 24 pt text in a 34 px #fixed box. At scale 1 the box
+        // stays 34; on a stage drawn 2.8125x (1920x1080 at 200 %) it must
+        // hold the 68 px glyphs, so it is 96 rows, not 34.
+        assert_eq!(clipped_text_box_render_height(34, 0, 1, 1.0), 34);
+        assert_eq!(clipped_text_box_render_height(34, 0, 1, 2.8125), 96);
+        assert_eq!(clipped_text_box_render_height(34, 0, 1, 1.40625), 48);
+        // A 60 px box for 48 pt digits and a two-line 68 px box.
+        assert_eq!(clipped_text_box_render_height(60, 0, 1, 2.8125), 169);
+        assert_eq!(clipped_text_box_render_height(68, 0, 1, 1.25), 85);
+        // A stored height that is one stride of three lines becomes the
+        // three strides, scaled.
+        assert_eq!(clipped_text_box_render_height(18, 18, 3, 1.0), 54);
+        assert_eq!(clipped_text_box_render_height(18, 18, 3, 2.0), 108);
+        // Never zero.
+        assert_eq!(clipped_text_box_render_height(0, 0, 1, 0.1), 1);
     }
 
     #[test]
