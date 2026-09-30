@@ -5997,6 +5997,28 @@ fn scale_movie_rect(rect: IntRect, origin_x: f64, origin_y: f64, sx: f64, sy: f6
     )
 }
 
+/// Generous bitmap height, in render pixels, for text that may wrap past its
+/// authored lines: `max_stride` per source line, plus an estimate of the
+/// wrapped lines from the text length, plus two spare lines and the spacing.
+/// The strides, font size and spacing are movie pixels and `render_width` is
+/// in render pixels, so the estimate is made at movie scale and then scaled.
+pub fn text_bitmap_height_estimate(
+    max_stride: i32,
+    source_lines: i32,
+    text_chars: i32,
+    render_width: i32,
+    font_size: i32,
+    spacing_pad: i32,
+    scale: f64,
+) -> i32 {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let movie_width = ((render_width as f64) / scale).round() as i32;
+    let chars_per_line = (movie_width / (font_size / 2).max(1)).max(1);
+    let wrap_estimate = (text_chars / chars_per_line).max(0);
+    let lines = source_lines + wrap_estimate + 2;
+    (((max_stride * lines + spacing_pad) as f64) * scale).round() as i32
+}
+
 /// Line stride of an outline font's line that has no fixedLineSpace and no
 /// per-paragraph spacing: the font's own line (ascent + descent) or the point
 /// size plus the bottom spacing, whichever is larger.
@@ -7299,7 +7321,7 @@ pub fn get_score_sprite_mut<'a>(
 
 #[cfg(test)]
 mod rect_tests {
-    use super::{auto_outline_line_step, clipped_text_box_render_height, normalise_rect, scale_movie_rect, scale_movie_rect_fixed_size};
+    use super::{auto_outline_line_step, clipped_text_box_render_height, normalise_rect, text_bitmap_height_estimate, scale_movie_rect, scale_movie_rect_fixed_size};
     use crate::player::geometry::IntRect;
 
     #[test]
@@ -7338,6 +7360,19 @@ mod rect_tests {
             .map(|t| scale_movie_rect(IntRect::from(143, t, 198, t + 19), 0.0, 0.0, 1.4326, 1.4326).height())
             .collect();
         assert!(heights.len() > 1);
+    }
+
+    #[test]
+    fn the_text_bitmap_estimate_scales_with_the_stage() {
+        // Five source lines of 24 pt text (stride 30) in a 987 px box with
+        // 330 characters: the same number of lines at every scale, so the
+        // estimate grows with the scale instead of shrinking relative to it.
+        let one = text_bitmap_height_estimate(30, 5, 330, 987, 24, 0, 1.0);
+        assert_eq!(one, 30 * (5 + 330 / (987 / 12) + 2));
+        let big = text_bitmap_height_estimate(30, 5, 330, 2776, 24, 0, 2.8125);
+        assert_eq!(big, ((one as f64) * 2.8125).round() as i32);
+        // It then outgrows a scaled four-line box (116 px at 2.8125 = 326).
+        assert!(big > 326);
     }
 
     #[test]

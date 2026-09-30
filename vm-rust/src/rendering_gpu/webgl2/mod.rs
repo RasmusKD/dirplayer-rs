@@ -2353,12 +2353,22 @@ impl WebGL2Renderer {
                         + 1) as i32;
                     // Estimate wrap-induced extra lines from text
                     // length and approximate chars-per-visual-line.
-                    let chars_per_line = (width as i32
-                        / ((text_member.font_size as i32) / 2).max(1))
-                        .max(1);
-                    let wrap_estimate = (text.chars().count() as i32 / chars_per_line).max(0);
-                    let visual_line_estimate = source_line_count + wrap_estimate + 2;
-                    let content_estimate = max_stride * visual_line_estimate + spacing_pad;
+                    // Everything here is in movie pixels, while `width`
+                    // and `base_height` are in render pixels, so the
+                    // estimate is made against the unscaled width and then
+                    // scaled like the box. Left in movie pixels it lost to
+                    // the scaled sprite height on a stage drawn 2.8x, and a
+                    // five-line paragraph was drawn into a four-line box.
+                    let (_, estimate_scale) = crate::player::stage::stage_scale(player);
+                    let content_estimate = crate::player::score::text_bitmap_height_estimate(
+                        max_stride,
+                        source_line_count,
+                        text.chars().count() as i32,
+                        width as i32,
+                        text_member.font_size as i32,
+                        spacing_pad,
+                        estimate_scale,
+                    );
                     // For #adjust text without explicit \r/\n breaks, score.rs
                     // already grew sprite_rect.height to fit the laid-out
                     // content (its 70% rule covers wrapped single paragraphs
