@@ -2937,88 +2937,52 @@ pub fn render_score_to_bitmap_with_offset(
                         erase_transparent_source: false,
                     };
 
-                    // Use styled text rendering if html_styled_spans is populated
-                    // BUT only use native rendering if the font is NOT a PFR bitmap font
-                    // PFR fonts can't be used by Canvas2D, so we must use bitmap rendering
+                    // A font with a PFR atlas is drawn from the atlas; any other
+                    // named font is drawn by the browser, as the WebGL2 renderer
+                    // decides it. "System" (or no name) is the bitmap system font.
                     let is_pfr_font = font.char_widths.is_some();
-                    if !text_member.html_styled_spans.is_empty() && !is_pfr_font && player.font_manager.pfr_enabled {
-                        // Parse alignment from text_member
+                    let is_system_font_requested = font_name == "System" || font_name.is_empty();
+                    if !is_pfr_font && !is_system_font_requested && player.font_manager.pfr_enabled {
                         let alignment = match text_member.alignment {
                             BuiltInSymbol::Center => TextAlignment::Center,
                             BuiltInSymbol::Right => TextAlignment::Right,
                             BuiltInSymbol::Justify => TextAlignment::Justify,
                             _ => TextAlignment::Left,
                         };
-
-                        let initial_span_size = text_member
-                            .html_styled_spans
-                            .first()
-                            .and_then(|s| s.style.font_size)
-                            .unwrap_or(0);
-                        let should_override_span_sizes = text_member.font_size > 0
-                            && (text_member.font_size as i32) != initial_span_size;
-
-                        // Clone spans and apply text member runtime overrides when needed.
-                        // The movie can set font, fontSize, fontStyle at runtime, so these
-                        // should override whatever was in the original styled spans
-                        let spans_with_defaults: Vec<StyledSpan> = text_member.html_styled_spans.iter().map(|span| {
-                            let mut style = span.style.clone();
-
-                            // ALWAYS use text_member's font if set (movie may have changed it)
-                            if !text_member.font.is_empty() {
-                                style.font_face = Some(text_member.font.clone());
-                            } else if style.font_face.as_ref().map_or(true, |f| f.is_empty()) {
-                                style.font_face = Some("Arial".to_string());
-                            }
-
-                            // Preserve per-span sizes unless the movie changed fontSize at runtime.
-                            if should_override_span_sizes {
-                                style.font_size = Some(text_member.font_size as i32);
-                            } else if style.font_size.map_or(true, |s| s <= 0) {
-                                style.font_size = Some(12);
-                            }
-
-                            // Use sprite color if span doesn't have color
-                            if style.color.is_none() {
-                                style.color = match &sprite.color {
-                                    ColorRef::Rgb(r, g, b) => {
-                                        Some(((*r as u32) << 16) | ((*g as u32) << 8) | (*b as u32))
-                                    }
-                                    ColorRef::PaletteIndex(idx) => {
-                                        match *idx {
-                                            0 => Some(0xFFFFFF),
-                                            255 => Some(0x000000),
-                                            _ => Some(0x000000),
-                                        }
-                                    }
-                                };
-                            }
-
-                            // ALWAYS apply text_member's fontStyle (movie may have changed it)
-                            if !text_member.font_style.is_empty() {
-                                style.bold = text_member.font_style.iter().any(|s| *s == BuiltInSymbol::Bold);
-                                style.italic = text_member.font_style.iter().any(|s| *s == BuiltInSymbol::Italic);
-                                style.underline = text_member.font_style.iter().any(|s| *s == BuiltInSymbol::Underline);
-                            }
-
-                            StyledSpan {
-                                text: span.text.clone(),
-                                style,
-                            }
-                        }).collect();
-
-                        // Use native browser text rendering for smooth, anti-aliased text
+                        let spans = crate::rendering_text::native_text_spans(
+                            text_member,
+                            &member.color,
+                            &sprite.color,
+                            sprite.has_fore_color,
+                            sprite.ink as u32,
+                            &palettes,
+                        );
+                        let word_wrap = text_member.word_wrap
+                            || text_member.box_type == BuiltInSymbol::Adjust;
+                        // Laid out in a transparent bitmap of the sprite's size
+                        // (the renderer's coordinates are local to the bitmap it
+                        // is given), then composited onto the stage.
+                        let mut text_bitmap = Bitmap::new(
+                            draw_w.max(1) as u16,
+                            draw_h.max(1) as u16,
+                            32,
+                            32,
+                            0,
+                            PaletteRef::BuiltIn(get_system_default_palette()),
+                        );
+                        text_bitmap.data.fill(0);
+                        text_bitmap.use_alpha = true;
                         if let Err(e) = FontMemberHandlers::render_native_text_to_bitmap(
-                            bitmap,
-                            &spans_with_defaults,
-                            draw_x,
-                            draw_y,
+                            &mut text_bitmap,
+                            &spans,
+                            0,
+                            text_member.top_spacing as i32,
                             draw_w,
                             draw_h,
                             alignment,
                             draw_w,
-                            text_member.word_wrap,
-                            None, // Color is now in the spans
+                            word_wrap,
+                            None, // Color is in the spans
                             text_member.fixed_line_space,
                             text_member.top_spacing,
                             text_member.bottom_spacing,
@@ -3028,6 +2992,14 @@ pub fn render_score_to_bitmap_with_offset(
                         ) {
                             console_warn!("Native text render error for Text member: {:?}", e);
                         }
+                        crate::rendering_text::composite_text_over(
+                            bitmap,
+                            &text_bitmap,
+                            draw_x,
+                            draw_y,
+                            sprite.effective_blend() as f32 / 100.0,
+                            &palettes,
+                        );
                     } else {
                         let is_focused = player.keyboard_focus_sprite == sprite.number as i16;
                         let sel_lo = text_member.sel_start.min(text_member.sel_end).max(0);

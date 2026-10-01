@@ -4,6 +4,7 @@ pub mod io;
 pub mod js_api;
 pub mod player;
 pub mod rendering;
+pub mod rendering_text;
 pub mod rendering_gpu;
 pub mod utils;
 
